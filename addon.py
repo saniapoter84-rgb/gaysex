@@ -179,29 +179,40 @@ def _trash_decode(s):
         return s
 
 
+def _pick_url(parts_str):
+    """From 'url1 or url2' pick the HLS/m3u8 variant, else last."""
+    parts = [p.strip() for p in parts_str.split(" or ") if p.strip()]
+    url = next((p for p in reversed(parts) if "m3u8" in p or "hls" in p), parts[-1])
+    return ("https:" + url) if url.startswith("//") else url
+
+
 def _parse_cdn_url(raw):
     """
     Parse CDN API response `url` field into {quality: stream_url}.
-    Handles plain and trash-encoded strings.
-    Decoded format: [360p]url_mp4 or url_hls[/360p],[720p]...[/720p],...
+    Handles trash-encoded strings and two plain-text formats:
+      - with closing tags:    [720p]url or url2[/720p],[480p]...[/480p]
+      - without closing tags: [720p]url or url2,[480p]...
     """
     if not isinstance(raw, str) or not raw:
         return {}
+
     decoded = raw if "[" in raw else _trash_decode(raw)
 
     result = {}
-    for m in re.finditer(r"\[(\d+p)\](.*?)\[/\1\]", decoded, re.DOTALL):
-        quality = m.group(1)
-        parts = [p.strip() for p in m.group(2).split(" or ")]
-        # Prefer HLS / m3u8 variant
-        url = next((p for p in reversed(parts) if "m3u8" in p or "hls" in p), parts[-1])
-        if url.startswith("//"):
-            url = "https:" + url
-        result[quality] = url
 
-    # Fallback if no quality tags found
+    # Format 1: [quality]...[/quality]
+    for m in re.finditer(r"\[(\d+p)\](.*?)\[/\1\]", decoded, re.DOTALL):
+        result[m.group(1)] = _pick_url(m.group(2))
+
+    # Format 2: [quality]url or url2, (no closing tag, comma-separated)
     if not result:
-        url = decoded.strip()
+        for m in re.finditer(r"\[(\d+p)\]([^\[]+)", decoded):
+            body = m.group(2).rstrip(", ")
+            result[m.group(1)] = _pick_url(body)
+
+    # Fallback: single plain URL
+    if not result:
+        url = decoded.strip().rstrip(",")
         if url.startswith("//"):
             url = "https:" + url
         if url.startswith("http"):
