@@ -480,7 +480,8 @@ def show_episode_qualities(title, translator, season, episode):
 
 
 def play_video(video_url):
-    li = xbmcgui.ListItem(path=video_url)
+    headers = urlencode({"User-Agent": _UA, "Referer": "https://rezka.ag/"})
+    li = xbmcgui.ListItem(path=f"{video_url}|{headers}")
     xbmcplugin.setResolvedUrl(HANDLE, True, listitem=li)
 
 
