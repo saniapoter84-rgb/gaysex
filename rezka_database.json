@@ -11907,14 +11907,114 @@
             }
         }
     },
-	{
-  "title": "Звездные врата: Вселенная",
-  "type": "сериалы",
-  "url": "https://rezka.ag/series/fiction/11562-zvezdnye-vrata-vselennaya-2009.html",
-  "translators": ["ТВ-3", "лостфильм (LostFilm)", "Оригинал (+субтитры)"],
-  "seasons": {
-    "1": 20,
-    "2": 20
+    {
+        "title": "Звездные врата: Вселенная",
+        "type": "сериалы",
+        "url": "https://rezka.ag/series/fiction/11562-zvezdnye-vrata-vselennaya-2009.html",
+        "translators": [
+            "ТВ-3",
+            "лостфильм (LostFilm)",
+            "Оригинал (+субтитры)"
+        ],
+        "seasons": {
+            "1": 20,
+            "2": 20
+        }
+    },
+    {
+        "title": "Рандеву с жизнью [ТВ-1]",
+        "type": "аниме",
+        "url": "https://rezka.ag/animation/adventures/21859-randevu-s-zhiznyu-tv-1-2013.html",
+        "translators": [
+            "Дубляж",
+            "AniDUB",
+            "AniLibria",
+            "Оригинал (+субтитры)"
+        ],
+        "seasons": {
+            "1": 12
+        }
+    },
+    {
+        "title": "Рандеву с жизнью [ТВ-2]",
+        "type": "аниме",
+        "url": "https://rezka.ag/animation/adventures/47604-randevu-s-zhiznyu-tv-2-2014.html",
+        "translators": [
+            "Дубляж",
+            "AniDUB",
+            "Оригинал (+субтитры)"
+        ],
+        "seasons": {
+            "2": 10
+        }
+    },
+    {
+        "title": "Рандеву с жизнью [ТВ-3]",
+        "type": "аниме",
+        "url": "https://rezka.ag/animation/adventures/47605-randevu-s-zhiznyu-tv-3-2019.html",
+        "translators": [
+            "Дубляж",
+            "AniDUB",
+            "Оригинал (+субтитры)"
+        ],
+        "seasons": {
+            "3": 12
+        }
+    },
+    {
+        "title": "Рандеву с жизнью [ТВ-4]",
+        "type": "аниме",
+        "url": "https://rezka.ag/animation/adventures/48060-randevu-s-zhiznyu-tv-4-2022.html",
+        "translators": [
+            "StudioBand",
+            "AniLibria",
+            "Оригинал (+субтитры)"
+        ],
+        "seasons": {
+            "4": 12
+        }
+    },
+    {
+        "title": "Рандеву с жизнью [ТВ-5]",
+        "type": "аниме",
+        "url": "https://rezka.ag/animation/adventures/69326-randevu-s-zhiznyu-tv-5-2024.html",
+        "translators": [
+            "AniLibria",
+            "AniBaza",
+            "Оригинал (+субтитры)"
+        ],
+        "seasons": {
+            "5": 12
+        }
+    },
+    {
+        "title": "Рандеву с жизнью: От свидания к свиданию [OVA-1]",
+        "type": "фильмы",
+        "url": "https://rezka.ag/animation/adventures/48257-randevu-s-zhiznyu-ot-svidaniya-k-svidaniyu-ova-1-2013.html",
+        "translators": [
+            "Дубляж",
+            "AniDUB",
+            "AniLibria",
+            "Оригинал (+субтитры)"
+        ]
+    },
+    {
+        "title": "Рандеву с жизнью: Звёздный фестиваль с Куруми [OVA-2]",
+        "type": "фильмы",
+        "url": "https://rezka.ag/animation/adventures/48258-randevu-s-zhiznyu-zvezdnyy-festival-s-kurumi-ova-2-2014.html",
+        "translators": [
+            "Дубляж",
+            "AniDUB",
+            "Оригинал (+субтитры)"
+        ]
+    },
+    {
+        "title": "Рандеву с Жизнью: Приговор Маюри (фильм)",
+        "type": "фильмы",
+        "url": "https://rezka.ag/animation/adventures/17800-randevu-s-zhiznyu-prigovor-mayuri-film-2015.html",
+        "translators": [
+            "Дубляж",
+            "AniDUB"
+        ]
     }
-	}
 ]
