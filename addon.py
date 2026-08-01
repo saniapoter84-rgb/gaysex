@@ -87,16 +87,21 @@ def _parse_content_id(html):
 def _parse_translator_ids(html):
     """Return {display_name: translator_id} from the page."""
     result = {}
-    # Pattern 1: <li id="translator-CONTENTID-TRANSID"><b>Name</b>
+    # Pattern 1: id="translator-CONTENTID-TRANSID" with name in <b>
     for m in re.finditer(r'id="translator-\d+-(\d+)"[^>]*>\s*<b>([^<]+)</b>', html):
         result[m.group(2).strip()] = m.group(1)
-    # Pattern 2: data-translator-id="ID" class="b-translator__item">Name
-    for m in re.finditer(r'data-translator-id="(\d+)"[^>]*>\s*([^<\n]{2,60})', html):
-        name = m.group(2).strip().rstrip('<').strip()
+    # Pattern 2: data-translator-id; name may be direct text OR inside an inner tag (<b>, <span>, etc.)
+    for m in re.finditer(r'data-translator-id="(\d+)"[^>]*>\s*(?:<[a-z][^>]*>)?\s*([^<]{2,80})', html):
+        name = m.group(2).strip()
         if name and name not in result:
             result[name] = m.group(1)
-    # Pattern 3: <option value="ID">Name</option> in translator select
-    for m in re.finditer(r'<option[^>]+value="(\d+)"[^>]*>([^<]{2,60})</option>', html):
+    # Pattern 3: <option value="ID">Name</option>
+    for m in re.finditer(r'<option[^>]+value="(\d+)"[^>]*>([^<]{2,80})</option>', html):
+        name = m.group(2).strip()
+        if name and name not in result:
+            result[name] = m.group(1)
+    # Pattern 4: JSON-embedded translators in script block
+    for m in re.finditer(r'"translator_id"\s*:\s*(\d+)[^}]{0,200}?"translator_name"\s*:\s*"([^"]+)"', html, re.DOTALL):
         name = m.group(2).strip()
         if name and name not in result:
             result[name] = m.group(1)
@@ -197,6 +202,7 @@ def _fetch_qualities(item, translator_name, season=None, episode=None):
         raise RuntimeError("Не удалось определить ID контента на странице")
 
     id_map = _parse_translator_ids(html)
+    xbmc.log(f"RezkaLocal: найдено озвучек на странице: {list(id_map.keys())}", xbmc.LOGINFO)
     tid = id_map.get(translator_name)
 
     if not tid:
@@ -205,13 +211,16 @@ def _fetch_qualities(item, translator_name, season=None, episode=None):
         for name, t in id_map.items():
             if low in name.lower() or name.lower() in low:
                 tid = t
+                xbmc.log(f"RezkaLocal: нечёткое совпадение «{translator_name}» → «{name}»", xbmc.LOGINFO)
                 break
 
     if not tid:
         # Last resort: use the first available translator
         if id_map:
             tid = next(iter(id_map.values()))
+            xbmc.log(f"RezkaLocal: озвучка «{translator_name}» не найдена, берём первую доступную", xbmc.LOGWARNING)
         else:
+            xbmc.log(f"RezkaLocal: id_map пуст. HTML начало: {html[:800]!r}", xbmc.LOGERROR)
             raise RuntimeError(f"Озвучка «{translator_name}» не найдена на странице")
 
     action = "get_stream" if season is not None else "get_movie"
