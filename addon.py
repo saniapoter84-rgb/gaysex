@@ -185,6 +185,8 @@ def _parse_cdn_url(raw):
     Handles plain and trash-encoded strings.
     Decoded format: [360p]url_mp4 or url_hls[/360p],[720p]...[/720p],...
     """
+    if not isinstance(raw, str) or not raw:
+        return {}
     decoded = raw if "[" in raw else _trash_decode(raw)
 
     result = {}
@@ -242,7 +244,13 @@ def _call_cdn_api(content_id, translator_id, action, season=None, episode=None):
     if not body.get("success"):
         raise RuntimeError(body.get("message", "CDN API вернул ошибку"))
 
-    return _parse_cdn_url(body["url"])
+    qualities = _parse_cdn_url(body.get("url"))
+    if not qualities:
+        raise RuntimeError(
+            f"CDN API не вернул ссылки. url={body.get('url')!r}, "
+            f"premium={body.get('premium_content')}"
+        )
+    return qualities
 
 
 def _fetch_qualities(item, translator_name, season=None, episode=None):
@@ -411,7 +419,12 @@ def show_qualities(title, translator):
 
 def show_seasons(title, translator):
     item = _find_item(title)
-    if not item or "seasons" not in item:
+    if not item:
+        xbmcgui.Dialog().ok("RezkaLocal", f"Сериал не найден в базе:\n{title}")
+        xbmcplugin.endOfDirectory(HANDLE)
+        return
+    if "seasons" not in item:
+        xbmcgui.Dialog().ok("RezkaLocal", f"У записи «{title}» нет поля seasons.\nПроверь формат JSON.")
         xbmcplugin.endOfDirectory(HANDLE)
         return
 
