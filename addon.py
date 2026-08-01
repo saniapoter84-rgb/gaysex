@@ -198,29 +198,35 @@ def _fetch_qualities(item, translator_name, season=None, episode=None):
     if not content_id:
         content_id = _parse_content_id(html)
     if not content_id:
-        xbmc.log(f"RezkaLocal: не найден ID. URL={page_url}. HTML начало: {html[:500]!r}", xbmc.LOGERROR)
+        xbmcgui.Dialog().ok(
+            "RezkaLocal — ID не найден",
+            f"URL: {page_url}\n\nHTML начало:\n{html[:400]}",
+        )
         raise RuntimeError("Не удалось определить ID контента на странице")
 
     id_map = _parse_translator_ids(html)
-    xbmc.log(f"RezkaLocal: найдено озвучек на странице: {list(id_map.keys())}", xbmc.LOGINFO)
     tid = id_map.get(translator_name)
 
     if not tid:
-        # Fuzzy match when names differ slightly (e.g. trailing spaces, ™)
         low = translator_name.lower()
         for name, t in id_map.items():
             if low in name.lower() or name.lower() in low:
                 tid = t
-                xbmc.log(f"RezkaLocal: нечёткое совпадение «{translator_name}» → «{name}»", xbmc.LOGINFO)
                 break
 
     if not tid:
-        # Last resort: use the first available translator
         if id_map:
-            tid = next(iter(id_map.values()))
-            xbmc.log(f"RezkaLocal: озвучка «{translator_name}» не найдена, берём первую доступную", xbmc.LOGWARNING)
+            found = ", ".join(id_map.keys())
+            xbmcgui.Dialog().ok(
+                "RezkaLocal — озвучка не найдена",
+                f"Искали: «{translator_name}»\n\nНайдено на странице:\n{found}",
+            )
+            raise RuntimeError(f"Озвучка «{translator_name}» не найдена. На странице: {found}")
         else:
-            xbmc.log(f"RezkaLocal: id_map пуст. HTML начало: {html[:800]!r}", xbmc.LOGERROR)
+            xbmcgui.Dialog().ok(
+                "RezkaLocal — ошибка",
+                f"Озвучки не найдены вообще.\n\nURL: {page_url}\n\nHTML начало:\n{html[:300]}",
+            )
             raise RuntimeError(f"Озвучка «{translator_name}» не найдена на странице")
 
     action = "get_stream" if season is not None else "get_movie"
