@@ -59,13 +59,24 @@ def _content_id_from_url(page_url):
 
 def _parse_content_id(html):
     for pat in (
+        # JS player init calls
         r"initCDNMoviesEvents\s*\(\s*(\d+)",
         r"initCDNSeriesEvents\s*\(\s*(\d+)",
         r'sof\.tv\.\w+Events\s*\(\s*(\d+)',
-        r'"id"\s*:\s*(\d{4,})',
+        # Canonical / og:url — most stable: ID is in the page URL itself
+        r'<link[^>]+rel=["\']canonical["\'][^>]+href=["\'][^"\']*?/(\d+)-',
+        r'property=["\']og:url["\'][^>]+content=["\'][^"\']*?/(\d+)-',
+        r'content=["\'][^"\']*?/(\d+)-[^/]+\.html["\'][^>]*property=["\']og:url["\']',
+        # HTML data attributes
         r"data-id=[\"'](\d+)[\"']",
+        r'data-content-id=["\'](\d+)["\']',
+        # JS / JSON properties
+        r'"id"\s*:\s*(\d{4,})',
+        r'"content_id"\s*:\s*(\d+)',
         r'id_content\s*=\s*(\d+)',
         r"banhammer_id\s*=\s*[\"']?(\d+)",
+        # Numeric ID embedded anywhere in a script src / URL param
+        r'player\.php[?][^"\']*id=(\d+)',
     ):
         m = re.search(pat, html)
         if m:
@@ -182,6 +193,7 @@ def _fetch_qualities(item, translator_name, season=None, episode=None):
     if not content_id:
         content_id = _parse_content_id(html)
     if not content_id:
+        xbmc.log(f"RezkaLocal: не найден ID. URL={page_url}. HTML начало: {html[:500]!r}", xbmc.LOGERROR)
         raise RuntimeError("Не удалось определить ID контента на странице")
 
     id_map = _parse_translator_ids(html)
