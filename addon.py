@@ -1,12 +1,14 @@
 import base64
 import gzip
+import hashlib
+import http.cookiejar
 import json
 import os
 import re
 import sys
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urlencode
-from urllib.request import Request, urlopen
+from urllib.request import Request, build_opener, HTTPCookieProcessor
 
 import xbmc
 import xbmcaddon
@@ -27,18 +29,23 @@ _UA = (
 )
 _QUALITY_ORDER = ["1080p", "720p", "480p", "360p", "auto"]
 
+_cookie_jar = http.cookiejar.CookieJar()
+_opener = build_opener(HTTPCookieProcessor(_cookie_jar))
+
 
 # ── Network / rezka helpers ───────────────────────────────────────────────────
 
-def _fetch(url):
-    req = Request(url, headers={
-        "User-Agent": _UA,
-        "Referer": "https://rezka.ag/",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
-        "Accept-Encoding": "gzip, deflate",
-    })
-    with urlopen(req, timeout=15) as r:
+_BASE_HEADERS = {
+    "User-Agent": _UA,
+    "Referer": "https://rezka.ag/",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate",
+}
+
+
+def _read_response(resp):
+    with resp as r:
         raw = r.read()
         enc = r.headers.get("Content-Encoding", "")
         if enc == "gzip":
@@ -47,6 +54,60 @@ def _fetch(url):
             import zlib
             raw = zlib.decompress(raw)
         return raw.decode("utf-8", errors="replace")
+
+
+def _solve_anubis(html, url):
+    """
+    Solve Anubis PoW challenge and return the real page content.
+    Algorithm 'fast': find nonce where sha256(randomData + str(nonce))
+    has the first floor(difficulty/2) bytes == 0x00, and if difficulty is odd
+    the high nibble of byte floor(difficulty/2) must also be 0.
+    """
+    m = re.search(r'id="anubis_challenge"[^>]*>(\{.*?\})\s*</script>', html, re.DOTALL)
+    if not m:
+        return None
+    wrap = json.loads(m.group(1))
+    ch = wrap["challenge"]
+
+    m2 = re.search(r'id="anubis_base_prefix"[^>]*>"([^"]*)"', html)
+    base_prefix = m2.group(1) if m2 else ""
+
+    difficulty = ch["difficulty"]
+    p = difficulty // 2
+    u = difficulty % 2 != 0
+    random_data = ch["randomData"]
+
+    nonce = 0
+    while True:
+        digest = hashlib.sha256((random_data + str(nonce)).encode()).digest()
+        ok = all(digest[i] == 0 for i in range(p))
+        if ok and u and (digest[p] >> 4) != 0:
+            ok = False
+        if ok:
+            break
+        nonce += 1
+
+    params = urlencode({
+        "id": ch["id"],
+        "response": digest.hex(),
+        "nonce": str(nonce),
+        "redir": url,
+        "elapsedTime": "1337",
+    })
+    submit_url = f"https://rezka.ag{base_prefix}/.within.website/x/cmd/anubis/api/pass-challenge?{params}"
+    req = Request(submit_url, headers=_BASE_HEADERS)
+    # opener follows the redirect and sets the cookie; response is the real page
+    return _read_response(_opener.open(req, timeout=20))
+
+
+def _fetch(url):
+    req = Request(url, headers=_BASE_HEADERS)
+    html = _read_response(_opener.open(req, timeout=15))
+    if "anubis_challenge" in html:
+        real = _solve_anubis(html, url)
+        if real:
+            html = real
+    return html
 
 
 def _content_id_from_url(page_url):
@@ -87,21 +148,19 @@ def _parse_content_id(html):
 def _parse_translator_ids(html):
     """Return {display_name: translator_id} from the page."""
     result = {}
-    # Pattern 1: id="translator-CONTENTID-TRANSID" with name in <b>
+    # Primary: <li title="Name" ... data-translator_id="ID"> (underscore — current rezka.ag)
+    for m in re.finditer(r'<li[^>]+title="([^"]+)"[^>]+data-translator_id="(\d+)"', html):
+        result[m.group(1).strip()] = m.group(2)
+    for m in re.finditer(r'<li[^>]+data-translator_id="(\d+)"[^>]+title="([^"]+)"', html):
+        name = m.group(2).strip()
+        if name and name not in result:
+            result[name] = m.group(1)
+    # Fallback: data-translator-id (dash — older markup)
     for m in re.finditer(r'id="translator-\d+-(\d+)"[^>]*>\s*<b>([^<]+)</b>', html):
-        result[m.group(2).strip()] = m.group(1)
-    # Pattern 2: data-translator-id; name may be direct text OR inside an inner tag (<b>, <span>, etc.)
+        name = m.group(2).strip()
+        if name and name not in result:
+            result[name] = m.group(1)
     for m in re.finditer(r'data-translator-id="(\d+)"[^>]*>\s*(?:<[a-z][^>]*>)?\s*([^<]{2,80})', html):
-        name = m.group(2).strip()
-        if name and name not in result:
-            result[name] = m.group(1)
-    # Pattern 3: <option value="ID">Name</option>
-    for m in re.finditer(r'<option[^>]+value="(\d+)"[^>]*>([^<]{2,80})</option>', html):
-        name = m.group(2).strip()
-        if name and name not in result:
-            result[name] = m.group(1)
-    # Pattern 4: JSON-embedded translators in script block
-    for m in re.finditer(r'"translator_id"\s*:\s*(\d+)[^}]{0,200}?"translator_name"\s*:\s*"([^"]+)"', html, re.DOTALL):
         name = m.group(2).strip()
         if name and name not in result:
             result[name] = m.group(1)
@@ -171,10 +230,14 @@ def _call_cdn_api(content_id, translator_id, action, season=None, episode=None):
             "X-Requested-With": "XMLHttpRequest",
             "Referer": "https://rezka.ag/",
             "Content-Type": "application/x-www-form-urlencoded",
+            "Accept-Encoding": "gzip, deflate",
         },
     )
-    with urlopen(req, timeout=15) as r:
-        body = json.loads(r.read().decode("utf-8"))
+    raw_body = _read_response(_opener.open(req, timeout=15))
+    try:
+        body = json.loads(raw_body)
+    except json.JSONDecodeError:
+        raise RuntimeError("CDN API вернул не JSON (возможно, антибот-страница)")
 
     if not body.get("success"):
         raise RuntimeError(body.get("message", "CDN API вернул ошибку"))
