@@ -148,22 +148,28 @@ def _parse_content_id(html):
 def _parse_translator_ids(html):
     """Return {display_name: translator_id} from the page."""
     result = {}
-    # Primary: <li title="Name" ... data-translator_id="ID"> (underscore — current rezka.ag)
+
+    def add(name, tid):
+        name = name.strip().replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+        if name and name not in result:
+            result[name] = tid
+
+    # Series/anime: <li title="Name" data-translator_id="ID">
     for m in re.finditer(r'<li[^>]+title="([^"]+)"[^>]+data-translator_id="(\d+)"', html):
-        result[m.group(1).strip()] = m.group(2)
+        add(m.group(1), m.group(2))
     for m in re.finditer(r'<li[^>]+data-translator_id="(\d+)"[^>]+title="([^"]+)"', html):
-        name = m.group(2).strip()
-        if name and name not in result:
-            result[name] = m.group(1)
+        add(m.group(2), m.group(1))
+    # Films: <a title="Name" class="b-translator__items" data-translator_id="ID">
+    for m in re.finditer(r'<a[^>]+title="([^"]+)"[^>]+data-translator_id="(\d+)"', html):
+        add(m.group(1), m.group(2))
+    for m in re.finditer(r'<a[^>]+data-translator_id="(\d+)"[^>]+title="([^"]+)"', html):
+        add(m.group(2), m.group(1))
     # Fallback: data-translator-id (dash — older markup)
-    for m in re.finditer(r'id="translator-\d+-(\d+)"[^>]*>\s*<b>([^<]+)</b>', html):
-        name = m.group(2).strip()
-        if name and name not in result:
-            result[name] = m.group(1)
-    for m in re.finditer(r'data-translator-id="(\d+)"[^>]*>\s*(?:<[a-z][^>]*>)?\s*([^<]{2,80})', html):
-        name = m.group(2).strip()
-        if name and name not in result:
-            result[name] = m.group(1)
+    if not result:
+        for m in re.finditer(r'id="translator-\d+-(\d+)"[^>]*>\s*<b>([^<]+)</b>', html):
+            add(m.group(2), m.group(1))
+        for m in re.finditer(r'data-translator-id="(\d+)"[^>]*>\s*(?:<[a-z][^>]*>)?\s*([^<]{2,80})', html):
+            add(m.group(2), m.group(1))
     return result
 
 
