@@ -18,6 +18,7 @@ import xbmcplugin
 addon = xbmcaddon.Addon()
 ADDON_PATH = addon.getAddonInfo("path")
 JSON_PATH = os.path.join(ADDON_PATH, "rezka_database.json")
+CACHE_PATH = os.path.join(ADDON_PATH, "rezka_url_cache.json")
 
 BASE_URL = sys.argv[0]
 HANDLE = int(sys.argv[1])
@@ -283,10 +284,24 @@ def _call_cdn_api(content_id, translator_id, action, season=None, episode=None, 
 
 def _fetch_qualities(item, translator_name, season=None, episode=None):
     """
-    Fetch fresh stream URLs from rezka for a new-format entry.
+    Fetch stream URLs for a new-format entry.
+    Checks disk cache first; only hits rezka if cache is missing or stale.
     Returns {quality: url} or raises RuntimeError / URLError.
     """
     page_url = item["url"]
+    title = item.get("title", "")
+
+    key = _cache_key(title, translator_name, season, episode)
+    cache = _load_cache()
+    if key in cache:
+        cached = cache[key]
+        probe = next(iter(cached.values()), None)
+        if probe and _probe_url(probe):
+            xbmc.log(f"RezkaLocal: кэш жив [{key}]", xbmc.LOGDEBUG)
+            return cached
+        xbmc.log(f"RezkaLocal: кэш устарел [{key}], обновляем", xbmc.LOGDEBUG)
+        del cache[key]
+        _save_cache(cache)
 
     # Extract content_id from the URL itself — no network needed
     content_id = _content_id_from_url(page_url)
@@ -334,8 +349,12 @@ def _fetch_qualities(item, translator_name, season=None, episode=None):
         tid, is_director, is_cam, is_ads = entry, "0", "0", "0"
 
     action = "get_stream" if season is not None else "get_movie"
-    return _call_cdn_api(content_id, tid, action, season, episode, page_url=page_url,
-                         is_director=is_director, is_cam=is_cam, is_ads=is_ads)
+    qualities = _call_cdn_api(content_id, tid, action, season, episode, page_url=page_url,
+                              is_director=is_director, is_cam=is_cam, is_ads=is_ads)
+    cache = _load_cache()
+    cache[key] = qualities
+    _save_cache(cache)
+    return qualities
 
 
 # ── Kodi helpers ──────────────────────────────────────────────────────────────
@@ -347,6 +366,38 @@ def _url(**kwargs):
 def _notify_error(msg):
     xbmc.log(f"RezkaLocal ERROR: {msg}", xbmc.LOGERROR)
     xbmcgui.Dialog().notification("RezkaLocal", msg, xbmcgui.NOTIFICATION_ERROR, 6000)
+
+
+def _load_cache():
+    if not os.path.exists(CACHE_PATH):
+        return {}
+    try:
+        with open(CACHE_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_cache(cache):
+    try:
+        with open(CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        xbmc.log(f"RezkaLocal: ошибка сохранения кэша: {e}", xbmc.LOGWARNING)
+
+
+def _cache_key(title, translator, season, episode):
+    return "|".join([title, translator, str(season) if season is not None else "", str(episode) if episode is not None else ""])
+
+
+def _probe_url(url):
+    """Check if a cached CDN URL is still alive via a 1-byte range request."""
+    try:
+        req = Request(url, headers={"User-Agent": _UA, "Range": "bytes=0-0"})
+        with _opener.open(req, timeout=5) as r:
+            return r.getcode() in (200, 206)
+    except Exception:
+        return False
 
 
 def _load_db():
