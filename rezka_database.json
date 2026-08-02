@@ -12016,5 +12016,95 @@
             "Дубляж",
             "AniDUB"
         ]
+    },
+    {
+        "title": "Операция «Фортуна»: Искусство побеждать",
+        "type": "фильмы",
+        "url": "https://rezka.ag/films/action/44774-operaciya-fortuna-iskusstvo-pobezhdat-2023-latest.html",
+        "translators": [
+            "Дубляж",
+            "TVShows",
+            "яскъер (Jaskier)",
+            "HDrezka в Кубе (Kubik³) (18+)",
+            "Есарев",
+            "HDrezka Studio",
+            "Украинский дубляж",
+            "Грузинский многоголосый",
+            "Казахский дубляж",
+            "Казахский многоголосый",
+            "Оригинал (+субтитры)"
+        ]
+    },
+    {
+        "title": "Во все тяжкие",
+        "type": "сериалы",
+        "url": "https://rezka.ag/series/thriller/646-vo-vse-tyazhkie-2008-latest.html",
+        "translators": [
+            "Дубляж",
+            "Амедиа (Amedia)",
+            "TVShows",
+            "HDrezka в Кубе (Kubik³)",
+            "лостфильм (LostFilm)",
+            "Гоблин",
+            "Сербин",
+            "Украинский многоголосый",
+            "Оригинал (+субтитры)"
+        ],
+        "seasons": {
+            "1": 7,
+            "2": 13,
+            "3": 13,
+            "4": 13,
+            "5": 17
+        }
+    },
+    {
+        "title": "Рик и Морти",
+        "type": "мультфильмы",
+        "url": "https://rezka.ag/cartoons/comedy/2136-rik-i-morti-2013-latest.html",
+        "translators": [
+            "Сыендук"
+        ],
+        "seasons": {
+            "1": 11,
+            "2": 10,
+            "3": 10,
+            "4": 10,
+            "5": 13,
+            "6": 10,
+            "7": 10,
+            "8": 10,
+            "9": 10
+        }
+    },
+    {
+        "title": "Человек-бензопила",
+        "type": "аниме",
+        "url": "https://rezka.ag/animation/fantasy/51376-chelovek-benzopila-2022-latest.html",
+        "translators": [
+            "Дубляж",
+            "Дубляж (новый)",
+            "TVShows",
+            "SHIZA Project",
+            "Saturn Union",
+            "AniLibria",
+            "DreamCast",
+            "GoLTFilm",
+            "Flarrow Films",
+            "FanVoxUA",
+            "Unimay media",
+            "Lifecycle",
+            "DZUSKI",
+            "HATOSHI",
+            "Amanogawa",
+            "Gwean & Maslinka",
+            "Грузинский двухголосый",
+            "Белорусский многоголосый",
+            "Dopamine Voice",
+            "Оригинал (+субтитры)"
+        ],
+        "seasons": {
+            "1": 12
+        }
     }
 ]
