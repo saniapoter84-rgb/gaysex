@@ -59,7 +59,7 @@ def _make_proxy_opener(proxy_url):
 def _test_proxy(proxy_url):
     try:
         opener = _make_proxy_opener(proxy_url)
-        req = Request("https://rezka.ag/", headers={"User-Agent": _UA})
+        req = Request("https://rezka.ag/", headers={"User-Agent": _UA, "Accept-Encoding": "identity"})
         with opener.open(req, timeout=6) as r:
             return r.getcode() == 200
     except Exception:
@@ -124,7 +124,7 @@ _BASE_HEADERS = {
     "Referer": "https://rezka.ag/",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
-    "Accept-Encoding": "gzip, deflate",
+    "Accept-Encoding": "identity",
 }
 
 
@@ -184,13 +184,24 @@ def _solve_anubis(html, url):
 
 
 def _fetch(url):
-    req = Request(url, headers=_BASE_HEADERS)
-    html = _read_response(_get_opener().open(req, timeout=15))
-    if "anubis_challenge" in html:
-        real = _solve_anubis(html, url)
-        if real:
-            html = real
-    return html
+    for attempt in range(2):
+        try:
+            req = Request(url, headers=_BASE_HEADERS)
+            html = _read_response(_get_opener().open(req, timeout=15))
+            if "anubis_challenge" in html:
+                real = _solve_anubis(html, url)
+                if real:
+                    html = real
+            return html
+        except Exception:
+            if attempt == 0:
+                # proxy might have died — clear cache and retry with fresh one
+                try:
+                    open(PROXY_CACHE_PATH, "w").close()
+                except Exception:
+                    pass
+            else:
+                raise
 
 
 def _content_id_from_url(page_url):
