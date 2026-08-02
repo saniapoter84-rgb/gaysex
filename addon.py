@@ -227,7 +227,7 @@ def _parse_cdn_url(raw):
     return result
 
 
-def _call_cdn_api(content_id, translator_id, action, season=None, episode=None):
+def _call_cdn_api(content_id, translator_id, action, season=None, episode=None, page_url=None):
     """POST to /ajax/get_cdn_series/ and return {quality: url}."""
     data = {
         "id": content_id,
@@ -247,7 +247,7 @@ def _call_cdn_api(content_id, translator_id, action, season=None, episode=None):
         headers={
             "User-Agent": _UA,
             "X-Requested-With": "XMLHttpRequest",
-            "Referer": "https://rezka.ag/",
+            "Referer": page_url or "https://rezka.ag/",
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept-Encoding": "gzip, deflate",
         },
@@ -318,7 +318,7 @@ def _fetch_qualities(item, translator_name, season=None, episode=None):
             raise RuntimeError(f"Озвучка «{translator_name}» не найдена на странице")
 
     action = "get_stream" if season is not None else "get_movie"
-    return _call_cdn_api(content_id, tid, action, season, episode)
+    return _call_cdn_api(content_id, tid, action, season, episode, page_url=page_url)
 
 
 # ── Kodi helpers ──────────────────────────────────────────────────────────────
