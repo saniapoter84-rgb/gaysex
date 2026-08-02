@@ -146,24 +146,32 @@ def _parse_content_id(html):
 
 
 def _parse_translator_ids(html):
-    """Return {display_name: translator_id} from the page."""
+    """Return {display_name: (translator_id, is_director, is_cam, is_ads)} from the page."""
     result = {}
 
-    def add(name, tid):
+    def add(name, tid, director="0", cam="0", ads="0"):
         name = name.strip().replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
         if name and name not in result:
-            result[name] = tid
+            result[name] = (tid, director, cam, ads)
 
-    # Series/anime: <li title="Name" data-translator_id="ID">
-    for m in re.finditer(r'<li[^>]+title="([^"]+)"[^>]+data-translator_id="(\d+)"', html):
-        add(m.group(1), m.group(2))
-    for m in re.finditer(r'<li[^>]+data-translator_id="(\d+)"[^>]+title="([^"]+)"', html):
-        add(m.group(2), m.group(1))
-    # Films: <a title="Name" class="b-translator__items" data-translator_id="ID">
-    for m in re.finditer(r'<a[^>]+title="([^"]+)"[^>]+data-translator_id="(\d+)"', html):
-        add(m.group(1), m.group(2))
-    for m in re.finditer(r'<a[^>]+data-translator_id="(\d+)"[^>]+title="([^"]+)"', html):
-        add(m.group(2), m.group(1))
+    def _flags(tag):
+        d = re.search(r'data-director=["\'](\d+)["\']', tag)
+        c = re.search(r'data-camrip=["\'](\d+)["\']', tag)
+        a = re.search(r'data-ads=["\'](\d+)["\']', tag)
+        return (d.group(1) if d else "0"), (c.group(1) if c else "0"), (a.group(1) if a else "0")
+
+    # Series/anime use <li>, films use <a> — capture whole tag body then pick attrs
+    for tag_re in (r'<li\b([^>]*)>', r'<a\b([^>]*)>'):
+        for m in re.finditer(tag_re, html):
+            tag = m.group(1)
+            tid_m = re.search(r'data-translator_id=["\'](\d+)["\']', tag)
+            if not tid_m:
+                continue
+            title_m = re.search(r'\btitle="([^"]+)"', tag)
+            if not title_m:
+                continue
+            add(title_m.group(1), tid_m.group(1), *_flags(tag))
+
     # Fallback: data-translator-id (dash — older markup)
     if not result:
         for m in re.finditer(r'id="translator-\d+-(\d+)"[^>]*>\s*<b>([^<]+)</b>', html):
@@ -227,15 +235,18 @@ def _parse_cdn_url(raw):
     return result
 
 
-def _call_cdn_api(content_id, translator_id, action, season=None, episode=None, page_url=None):
+def _call_cdn_api(content_id, translator_id, action, season=None, episode=None, page_url=None,
+                  is_director="0", is_cam="0", is_ads="0"):
     """POST to /ajax/get_cdn_series/ and return {quality: url}."""
     data = {
         "id": content_id,
         "translator_id": translator_id,
-        "is_cam": "0",
-        "is_ads": "0",
+        "is_cam": is_cam,
+        "is_ads": is_ads,
         "action": action,
     }
+    if is_director != "0":
+        data["is_director"] = is_director
     if season is not None:
         data["season"] = str(season)
     if episode is not None:
@@ -293,16 +304,16 @@ def _fetch_qualities(item, translator_name, season=None, episode=None):
         raise RuntimeError("Не удалось определить ID контента на странице")
 
     id_map = _parse_translator_ids(html)
-    tid = id_map.get(translator_name)
+    entry = id_map.get(translator_name)
 
-    if not tid:
+    if not entry:
         low = translator_name.lower()
-        for name, t in id_map.items():
+        for name, e in id_map.items():
             if low in name.lower() or name.lower() in low:
-                tid = t
+                entry = e
                 break
 
-    if not tid:
+    if not entry:
         if id_map:
             found = ", ".join(id_map.keys())
             xbmcgui.Dialog().ok(
@@ -317,8 +328,14 @@ def _fetch_qualities(item, translator_name, season=None, episode=None):
             )
             raise RuntimeError(f"Озвучка «{translator_name}» не найдена на странице")
 
+    if isinstance(entry, tuple):
+        tid, is_director, is_cam, is_ads = entry
+    else:
+        tid, is_director, is_cam, is_ads = entry, "0", "0", "0"
+
     action = "get_stream" if season is not None else "get_movie"
-    return _call_cdn_api(content_id, tid, action, season, episode, page_url=page_url)
+    return _call_cdn_api(content_id, tid, action, season, episode, page_url=page_url,
+                         is_director=is_director, is_cam=is_cam, is_ads=is_ads)
 
 
 # ── Kodi helpers ──────────────────────────────────────────────────────────────
