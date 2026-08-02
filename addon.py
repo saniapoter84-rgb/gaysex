@@ -542,18 +542,25 @@ def show_episodes(title, translator, season):
         xbmcplugin.endOfDirectory(HANDLE)
         return
 
+    hls_season = item.get("hls_episodes", {}).get(str(season), {})
+
     ep_count = int(item.get("seasons", {}).get(str(season), 0))
     for ep in range(1, ep_count + 1):
         label = f"Серия {ep}"
         li = xbmcgui.ListItem(label=label)
         li.setInfo("video", {"title": f"{title} С{season}Е{ep:02d}", "episode": ep, "season": int(season)})
-        xbmcplugin.addDirectoryItem(
-            HANDLE,
-            _url(action="list_episode_qualities", title=title, translator=translator,
-                 season=season, episode=ep),
-            li,
-            True,
-        )
+        hls_url = hls_season.get(str(ep))
+        if hls_url:
+            li.setProperty("IsPlayable", "true")
+            xbmcplugin.addDirectoryItem(HANDLE, _url(action="play", video_url=hls_url), li, False)
+        else:
+            xbmcplugin.addDirectoryItem(
+                HANDLE,
+                _url(action="list_episode_qualities", title=title, translator=translator,
+                     season=season, episode=ep),
+                li,
+                True,
+            )
     xbmcplugin.endOfDirectory(HANDLE)
 
 
