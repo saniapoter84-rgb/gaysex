@@ -61,7 +61,10 @@ def _test_proxy(proxy_url):
         opener = _make_proxy_opener(proxy_url)
         req = Request("https://rezka.ag/", headers={"User-Agent": _UA, "Accept-Encoding": "identity"})
         with opener.open(req, timeout=6) as r:
-            return r.getcode() == 200
+            if r.getcode() != 200:
+                return False
+            body = r.read(2048).decode("utf-8", errors="replace")
+            return "rezka" in body.lower()
     except Exception:
         return False
 
