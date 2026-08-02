@@ -5,10 +5,11 @@ import http.cookiejar
 import json
 import os
 import re
+import ssl
 import sys
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qsl, urlencode
-from urllib.request import Request, build_opener, HTTPCookieProcessor
+from urllib.request import Request, build_opener, HTTPCookieProcessor, ProxyHandler, HTTPSHandler
 
 import xbmc
 import xbmcaddon
@@ -19,6 +20,13 @@ addon = xbmcaddon.Addon()
 ADDON_PATH = addon.getAddonInfo("path")
 JSON_PATH = os.path.join(ADDON_PATH, "rezka_database.json")
 CACHE_PATH = os.path.join(ADDON_PATH, "rezka_url_cache.json")
+PROXY_CACHE_PATH = os.path.join(ADDON_PATH, "rezka_proxy.txt")
+
+_STATIC_PROXIES = [
+    "http://47.237.92.86:3129",
+    "http://47.238.134.126:82",
+]
+_PROXY_LIST_URL = "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt"
 
 BASE_URL = sys.argv[0]
 HANDLE = int(sys.argv[1])
@@ -32,6 +40,81 @@ _QUALITY_ORDER = ["1080p", "720p", "480p", "360p", "auto"]
 
 _cookie_jar = http.cookiejar.CookieJar()
 _opener = build_opener(HTTPCookieProcessor(_cookie_jar))
+
+# ── Proxy support ─────────────────────────────────────────────────────────────
+
+_SSL_CTX = ssl.create_default_context()
+_SSL_CTX.check_hostname = False
+_SSL_CTX.verify_mode = ssl.CERT_NONE
+
+
+def _make_proxy_opener(proxy_url):
+    return build_opener(
+        HTTPCookieProcessor(_cookie_jar),
+        ProxyHandler({"http": proxy_url, "https": proxy_url}),
+        HTTPSHandler(context=_SSL_CTX),
+    )
+
+
+def _test_proxy(proxy_url):
+    try:
+        opener = _make_proxy_opener(proxy_url)
+        req = Request("https://rezka.ag/", headers={"User-Agent": _UA})
+        with opener.open(req, timeout=6) as r:
+            return r.getcode() == 200
+    except Exception:
+        return False
+
+
+def _fetch_proxy_list():
+    try:
+        req = Request(_PROXY_LIST_URL, headers={"User-Agent": _UA})
+        with _opener.open(req, timeout=10) as r:
+            text = r.read().decode("utf-8", errors="replace")
+        return ["http://" + line.strip() for line in text.splitlines() if line.strip() and ":" in line]
+    except Exception:
+        return []
+
+
+def _find_working_proxy():
+    for p in _STATIC_PROXIES:
+        xbmc.log(f"RezkaLocal: тест прокси {p}", xbmc.LOGDEBUG)
+        if _test_proxy(p):
+            return p
+    xbmc.log("RezkaLocal: статичные прокси мертвы, тяну список с GitHub", xbmc.LOGINFO)
+    for p in _fetch_proxy_list()[:30]:
+        if _test_proxy(p):
+            return p
+    return None
+
+
+def _get_opener():
+    """Return opener with working proxy (cached to disk). Falls back to direct."""
+    # Read cached proxy
+    cached = None
+    try:
+        if os.path.exists(PROXY_CACHE_PATH):
+            cached = open(PROXY_CACHE_PATH).read().strip() or None
+    except Exception:
+        pass
+
+    if cached and _test_proxy(cached):
+        return _make_proxy_opener(cached)
+
+    # Find new proxy
+    proxy = _find_working_proxy()
+    try:
+        with open(PROXY_CACHE_PATH, "w") as f:
+            f.write(proxy or "")
+    except Exception:
+        pass
+
+    if proxy:
+        xbmc.log(f"RezkaLocal: используется прокси {proxy}", xbmc.LOGINFO)
+        return _make_proxy_opener(proxy)
+
+    xbmc.log("RezkaLocal: прокси не найден, работаем напрямую", xbmc.LOGWARNING)
+    return _opener
 
 
 # ── Network / rezka helpers ───────────────────────────────────────────────────
@@ -97,13 +180,12 @@ def _solve_anubis(html, url):
     })
     submit_url = f"https://rezka.ag{base_prefix}/.within.website/x/cmd/anubis/api/pass-challenge?{params}"
     req = Request(submit_url, headers=_BASE_HEADERS)
-    # opener follows the redirect and sets the cookie; response is the real page
-    return _read_response(_opener.open(req, timeout=20))
+    return _read_response(_get_opener().open(req, timeout=20))
 
 
 def _fetch(url):
     req = Request(url, headers=_BASE_HEADERS)
-    html = _read_response(_opener.open(req, timeout=15))
+    html = _read_response(_get_opener().open(req, timeout=15))
     if "anubis_challenge" in html:
         real = _solve_anubis(html, url)
         if real:
@@ -264,7 +346,7 @@ def _call_cdn_api(content_id, translator_id, action, season=None, episode=None, 
             "Accept-Encoding": "gzip, deflate",
         },
     )
-    raw_body = _read_response(_opener.open(req, timeout=15))
+    raw_body = _read_response(_get_opener().open(req, timeout=15))
     try:
         body = json.loads(raw_body)
     except json.JSONDecodeError:
@@ -394,7 +476,7 @@ def _probe_url(url):
     """Check if a cached CDN URL is still alive via a 1-byte range request."""
     try:
         req = Request(url, headers={"User-Agent": _UA, "Range": "bytes=0-0"})
-        with _opener.open(req, timeout=5) as r:
+        with _get_opener().open(req, timeout=5) as r:
             return r.getcode() in (200, 206)
     except Exception:
         return False
