@@ -372,16 +372,32 @@ def show_categories():
     xbmcplugin.endOfDirectory(HANDLE)
 
 
-def show_items(category):
+def show_items(category, query=""):
+    # Search entry at the top
+    search_li = xbmcgui.ListItem(label="[Поиск...]")
+    search_li.setInfo("video", {"title": "Поиск"})
+    xbmcplugin.addDirectoryItem(HANDLE, _url(action="search", category=category), search_li, True)
+
+    needle = query.lower().strip()
     for item in _load_db():
         if item.get("type") != category:
             continue
         title = item.get("title", "Без названия")
+        if needle and needle not in title.lower():
+            continue
         is_series = "seasons" in item
         li = xbmcgui.ListItem(label=title)
         li.setInfo("video", {"title": title, "mediatype": "tvshow" if is_series else "movie"})
         xbmcplugin.addDirectoryItem(HANDLE, _url(action="list_translators", title=title), li, True)
     xbmcplugin.endOfDirectory(HANDLE)
+
+
+def show_search(category):
+    query = xbmcgui.Dialog().input("Поиск", type=xbmcgui.INPUT_ALPHANUM)
+    if not query:
+        xbmcplugin.endOfDirectory(HANDLE)
+        return
+    show_items(category, query=query)
 
 
 def show_translators(title):
@@ -512,6 +528,8 @@ def router(paramstring):
         show_categories()
     elif action == "list_items":
         show_items(p["category"])
+    elif action == "search":
+        show_search(p["category"])
     elif action == "list_translators":
         show_translators(p["title"])
     elif action == "list_qualities":
