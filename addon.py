@@ -579,6 +579,27 @@ def _pick_hls(file_str):
     return ("https:" + url) if url.startswith("//") else url
 
 
+def _parse_quality_urls(file_str):
+    """Split 'url1080 or url720 or ...' into [(label, url), ...] ordered best→worst."""
+    if not file_str:
+        return []
+    raw = [p.strip() for p in file_str.split(" or ") if p.strip()]
+    result = []
+    for part in raw:
+        url = ("https:" + part) if part.startswith("//") else part
+        m = re.search(r'[/_](\d{3,4})[pP]?(?:[/_.]|$)', url)
+        if m:
+            label = f"{m.group(1)}p"
+        elif len(raw) == 1:
+            label = "Авто"
+        else:
+            label = f"Поток {len(result) + 1}"
+        result.append((label, url))
+    if len(result) > 1 and all(re.search(r'\d+p', r[0]) for r in result):
+        result.sort(key=lambda x: int(re.search(r'\d+', x[0]).group()), reverse=True)
+    return result
+
+
 def _load_kinogo_cache():
     try:
         with open(KINOGO_CACHE_PATH, "r", encoding="utf-8") as f:
@@ -701,19 +722,68 @@ def _show_kinogo_episodes(item, translator, season):
         li = xbmcgui.ListItem(label=ep_label)
         li.setInfo("video", {"title": f"{title} {ep_label}", "episode": ep_idx, "season": s_idx})
 
-        hls_url = None
+        hls_file = ""
         for voice in ep_item.get("folder", []):
             if _strip_html(voice.get("title", "")) == translator:
-                f = _node_file(voice)
-                hls_url = _pick_hls(f) if f else None
+                hls_file = _node_file(voice)
                 break
 
-        if hls_url:
-            li.setProperty("IsPlayable", "true")
-            xbmcplugin.addDirectoryItem(HANDLE, _url(action="play", video_url=hls_url), li, False)
+        if hls_file:
+            qualities = _parse_quality_urls(hls_file)
+            if len(qualities) == 1:
+                li.setProperty("IsPlayable", "true")
+                xbmcplugin.addDirectoryItem(HANDLE, _url(action="play", video_url=qualities[0][1]), li, False)
+            else:
+                xbmcplugin.addDirectoryItem(
+                    HANDLE,
+                    _url(action="list_kinogo_ep_qualities", title=title,
+                         translator=translator, season=str(s_idx), ep_idx=str(ep_idx)),
+                    li, True,
+                )
         else:
             li.setLabel(f"{ep_label} (нет: {translator})")
             xbmcplugin.addDirectoryItem(HANDLE, "#", li, False)
+
+    xbmcplugin.endOfDirectory(HANDLE)
+
+
+def _show_kinogo_ep_qualities(item, translator, season, ep_idx):
+    title = item["title"]
+    try:
+        playlist = _get_kinogo_playlist(item["url"])
+    except RuntimeError as e:
+        _notify_error(str(e))
+        xbmcplugin.endOfDirectory(HANDLE)
+        return
+
+    s_idx = int(season)
+    ep_n = int(ep_idx)
+    season_folder = playlist[s_idx - 1].get("folder", []) if s_idx <= len(playlist) else []
+    if ep_n < 1 or ep_n > len(season_folder):
+        _notify_error(f"Серия {ep_n} не найдена")
+        xbmcplugin.endOfDirectory(HANDLE)
+        return
+
+    ep_item = season_folder[ep_n - 1]
+    ep_label = _strip_html(ep_item.get("title", f"Серия {ep_n}"))
+
+    hls_file = ""
+    for voice in ep_item.get("folder", []):
+        if _strip_html(voice.get("title", "")) == translator:
+            hls_file = _node_file(voice)
+            break
+
+    qualities = _parse_quality_urls(hls_file)
+    if not qualities:
+        _notify_error(f"URL не найден для озвучки: {translator}")
+        xbmcplugin.endOfDirectory(HANDLE)
+        return
+
+    for q_label, q_url in qualities:
+        li = xbmcgui.ListItem(label=f"{ep_label} [{q_label}]")
+        li.setInfo("video", {"title": f"{title} {ep_label} [{q_label}]", "episode": ep_n, "season": s_idx})
+        li.setProperty("IsPlayable", "true")
+        xbmcplugin.addDirectoryItem(HANDLE, _url(action="play", video_url=q_url), li, False)
 
     xbmcplugin.endOfDirectory(HANDLE)
 
@@ -727,27 +797,29 @@ def _show_kinogo_movie_qualities(item, translator):
         xbmcplugin.endOfDirectory(HANDLE)
         return
 
-    hls_url = None
+    hls_file = ""
     for node in playlist:
-        f = _node_file(node)
-        if node.get("title") == translator and f:
-            hls_url = _pick_hls(f)
+        if _strip_html(node.get("title", "")) == translator and _node_file(node):
+            hls_file = _node_file(node)
             break
         for sub in node.get("folder", []):
-            sf = _node_file(sub)
-            if sub.get("title") == translator and sf:
-                hls_url = _pick_hls(sf)
+            if _strip_html(sub.get("title", "")) == translator and _node_file(sub):
+                hls_file = _node_file(sub)
                 break
-        if hls_url:
+        if hls_file:
             break
 
-    if hls_url:
-        li = xbmcgui.ListItem(label=f"Смотреть [{translator}]")
-        li.setInfo("video", {"title": f"{title} [{translator}]"})
-        li.setProperty("IsPlayable", "true")
-        xbmcplugin.addDirectoryItem(HANDLE, _url(action="play", video_url=hls_url), li, False)
-    else:
+    qualities = _parse_quality_urls(hls_file)
+    if not qualities:
         _notify_error(f"URL не найден для перевода: {translator}")
+        xbmcplugin.endOfDirectory(HANDLE)
+        return
+
+    for q_label, q_url in qualities:
+        li = xbmcgui.ListItem(label=f"Смотреть [{translator}] [{q_label}]")
+        li.setInfo("video", {"title": f"{title} [{translator}] [{q_label}]"})
+        li.setProperty("IsPlayable", "true")
+        xbmcplugin.addDirectoryItem(HANDLE, _url(action="play", video_url=q_url), li, False)
 
     xbmcplugin.endOfDirectory(HANDLE)
 
@@ -1009,6 +1081,14 @@ def play_video(video_url):
     xbmcplugin.setResolvedUrl(HANDLE, True, listitem=li)
 
 
+def show_kinogo_ep_qualities(title, translator, season, ep_idx):
+    item = _find_item(title)
+    if not item:
+        xbmcplugin.endOfDirectory(HANDLE)
+        return
+    _show_kinogo_ep_qualities(item, translator, season, ep_idx)
+
+
 # ── Router ────────────────────────────────────────────────────────────────────
 
 def router(paramstring):
@@ -1031,6 +1111,8 @@ def router(paramstring):
         show_episodes(p["title"], p["translator"], p["season"])
     elif action == "list_episode_qualities":
         show_episode_qualities(p["title"], p["translator"], p["season"], p["episode"])
+    elif action == "list_kinogo_ep_qualities":
+        show_kinogo_ep_qualities(p["title"], p["translator"], p["season"], p["ep_idx"])
     elif action == "play":
         play_video(p["video_url"])
 
