@@ -626,13 +626,9 @@ def _fetch_hls_qualities(url, referer):
         })
         resp = _opener.open(req, timeout=35)
         text = _read_response(resp)
-    except HTTPError:
-        raise  # let caller detect 403 and refresh cache
     except Exception as e:
         xbmc.log(f"RezkaLocal: HLS manifest fetch failed [{url}]: {e}", xbmc.LOGWARNING)
         return []
-
-    xbmc.log(f"RezkaLocal: HLS manifest fetched [{url}] first300: {text[:300]!r}", xbmc.LOGDEBUG)
 
     variants = []
     lines = text.splitlines()
@@ -688,11 +684,6 @@ def _save_kinogo_cache(cache):
     except Exception as e:
         xbmc.log(f"RezkaLocal: kinogo cache save failed: {e}", xbmc.LOGWARNING)
 
-
-def _invalidate_kinogo_cache(page_url):
-    cache = _load_kinogo_cache()
-    cache.pop(page_url, None)
-    _save_kinogo_cache(cache)
 
 
 def _get_kinogo_playlist(page_url, force=False):
@@ -823,8 +814,9 @@ def _show_kinogo_episodes(item, translator, season):
 
 def _show_kinogo_ep_qualities(item, translator, season, ep_idx):
     title = item["title"]
+    # Always fetch fresh — CDN URLs are time-signed and must never be served from cache
     try:
-        playlist = _get_kinogo_playlist(item["url"])
+        playlist = _get_kinogo_playlist(item["url"], force=True)
     except RuntimeError as e:
         _notify_error(str(e))
         xbmcplugin.endOfDirectory(HANDLE)
@@ -832,47 +824,33 @@ def _show_kinogo_ep_qualities(item, translator, season, ep_idx):
 
     s_idx = int(season)
     ep_n = int(ep_idx)
+    season_folder = playlist[s_idx - 1].get("folder", []) if s_idx <= len(playlist) else []
+    if ep_n < 1 or ep_n > len(season_folder):
+        _notify_error(f"Серия {ep_n} не найдена")
+        xbmcplugin.endOfDirectory(HANDLE)
+        return
 
-    ep_label = ""
+    ep_item = season_folder[ep_n - 1]
+    ep_label = _strip_html(ep_item.get("title", f"Серия {ep_n}"))
+
+    hls_file = ""
+    for voice in ep_item.get("folder", []):
+        if _strip_html(voice.get("title", "")) == translator:
+            hls_file = _node_file(voice)
+            break
+
+    playerjs_qualities = _parse_quality_urls(hls_file)
+    best_url = playerjs_qualities[0][1] if playerjs_qualities else ""
+
     qualities = []
-    for attempt in range(2):
-        season_folder = playlist[s_idx - 1].get("folder", []) if s_idx <= len(playlist) else []
-        if ep_n < 1 or ep_n > len(season_folder):
-            _notify_error(f"Серия {ep_n} не найдена")
-            xbmcplugin.endOfDirectory(HANDLE)
-            return
+    if best_url and ".m3u8" in best_url:
+        try:
+            qualities = _fetch_hls_qualities(best_url, "https://kinogo.online/")
+        except Exception:
+            pass
 
-        ep_item = season_folder[ep_n - 1]
-        ep_label = _strip_html(ep_item.get("title", f"Серия {ep_n}"))
-
-        hls_file = ""
-        for voice in ep_item.get("folder", []):
-            if _strip_html(voice.get("title", "")) == translator:
-                hls_file = _node_file(voice)
-                break
-
-        playerjs_qualities = _parse_quality_urls(hls_file)
-        best_url = playerjs_qualities[0][1] if playerjs_qualities else ""
-
-        if best_url and ".m3u8" in best_url:
-            try:
-                qualities = _fetch_hls_qualities(best_url, "https://kinogo.online/")
-            except HTTPError as e:
-                if e.code == 403 and attempt == 0:
-                    xbmc.log("RezkaLocal: 403 on HLS manifest — signed URLs expired, refreshing cache", xbmc.LOGWARNING)
-                    _invalidate_kinogo_cache(item["url"])
-                    try:
-                        playlist = _get_kinogo_playlist(item["url"], force=True)
-                    except RuntimeError as re:
-                        _notify_error(str(re))
-                        xbmcplugin.endOfDirectory(HANDLE)
-                        return
-                    continue
-                qualities = []
-
-        if not qualities:
-            qualities = playerjs_qualities
-        break
+    if not qualities:
+        qualities = playerjs_qualities
 
     if not qualities:
         _notify_error(f"URL не найден для озвучки: {translator}")
@@ -890,49 +868,38 @@ def _show_kinogo_ep_qualities(item, translator, season, ep_idx):
 
 def _show_kinogo_movie_qualities(item, translator):
     title = item["title"]
+    # Always fetch fresh — CDN URLs are time-signed and must never be served from cache
     try:
-        playlist = _get_kinogo_playlist(item["url"])
+        playlist = _get_kinogo_playlist(item["url"], force=True)
     except RuntimeError as e:
         _notify_error(str(e))
         xbmcplugin.endOfDirectory(HANDLE)
         return
 
+    hls_file = ""
+    for node in playlist:
+        if _strip_html(node.get("title", "")) == translator and _node_file(node):
+            hls_file = _node_file(node)
+            break
+        for sub in node.get("folder", []):
+            if _strip_html(sub.get("title", "")) == translator and _node_file(sub):
+                hls_file = _node_file(sub)
+                break
+        if hls_file:
+            break
+
+    playerjs_qualities = _parse_quality_urls(hls_file)
+    best_url = playerjs_qualities[0][1] if playerjs_qualities else ""
+
     qualities = []
-    for attempt in range(2):
-        hls_file = ""
-        for node in playlist:
-            if _strip_html(node.get("title", "")) == translator and _node_file(node):
-                hls_file = _node_file(node)
-                break
-            for sub in node.get("folder", []):
-                if _strip_html(sub.get("title", "")) == translator and _node_file(sub):
-                    hls_file = _node_file(sub)
-                    break
-            if hls_file:
-                break
+    if best_url and ".m3u8" in best_url:
+        try:
+            qualities = _fetch_hls_qualities(best_url, "https://kinogo.online/")
+        except Exception:
+            pass
 
-        playerjs_qualities = _parse_quality_urls(hls_file)
-        best_url = playerjs_qualities[0][1] if playerjs_qualities else ""
-
-        if best_url and ".m3u8" in best_url:
-            try:
-                qualities = _fetch_hls_qualities(best_url, "https://kinogo.online/")
-            except HTTPError as e:
-                if e.code == 403 and attempt == 0:
-                    xbmc.log("RezkaLocal: 403 on HLS manifest — signed URLs expired, refreshing cache", xbmc.LOGWARNING)
-                    _invalidate_kinogo_cache(item["url"])
-                    try:
-                        playlist = _get_kinogo_playlist(item["url"], force=True)
-                    except RuntimeError as re:
-                        _notify_error(str(re))
-                        xbmcplugin.endOfDirectory(HANDLE)
-                        return
-                    continue
-                qualities = []
-
-        if not qualities:
-            qualities = playerjs_qualities
-        break
+    if not qualities:
+        qualities = playerjs_qualities
 
     if not qualities:
         _notify_error(f"URL не найден для перевода: {translator}")
