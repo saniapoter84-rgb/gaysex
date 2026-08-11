@@ -267,35 +267,64 @@ def parse_seasons_episodes(html, entry_type):
 
 # Маппинг сегментов URL-пути на тип контента
 _KINOGO_PATH_MAP = {
-    "filmy": "фильмы",
-    "films": "фильмы",
-    "film": "фильмы",
-    "serialy": "сериалы",
-    "series": "сериалы",
-    "serial": "сериалы",
-    "anime": "аниме",
-    "animes": "аниме",
-    "multfilmy": "мультфильмы",
-    "multserialy": "мультфильмы",
-    "multiki": "мультфильмы",
-    "cartoons": "мультфильмы",
-    "animation": "мультфильмы",
-    "cartoon": "мультфильмы",
+    # Фильмы
+    "filmy": "фильмы", "films": "фильмы", "film": "фильмы",
+    "kino": "фильмы", "movie": "фильмы", "movies": "фильмы",
+    # Сериалы
+    "serialy": "сериалы", "series": "сериалы", "serial": "сериалы",
+    "serials": "сериалы", "tvseries": "сериалы", "tv-series": "сериалы",
+    # Аниме
+    "anime": "аниме", "animes": "аниме", "anime-serialy": "аниме",
+    "anime-filmy": "аниме", "animefilm": "аниме", "animeserial": "аниме",
+    "аниме": "аниме",
+    # Мультфильмы
+    "multfilmy": "мультфильмы", "multserialy": "мультфильмы",
+    "multiki": "мультфильмы", "multfilm": "мультфильмы",
+    "cartoons": "мультфильмы", "cartoon": "мультфильмы",
+    "animation": "мультфильмы", "animated": "мультфильмы",
+    "multserial": "мультфильмы",
 }
 
 
 def detect_type_kinogo(url, html):
-    """Определить тип контента по URL-пути kinogo."""
+    """Определить тип контента по URL-пути и HTML kinogo."""
     path_seg = re.sub(r'https?://[^/]+/', '', url).split("/")[0].lower()
     t = _KINOGO_PATH_MAP.get(path_seg)
     if t:
         return t
-    # Попытка через og:type
+
+    # Фолбек: ищем в хлебных крошках / категориях внутри HTML
+    breadcrumb = re.search(
+        r'(?:breadcrumb|category)[^>]*>.*?</(?:ul|nav|div)',
+        html, re.IGNORECASE | re.DOTALL,
+    )
+    if breadcrumb:
+        bc = breadcrumb.group(0).lower()
+        if "аниме" in bc or "anime" in bc:
+            return "аниме"
+        if "мультф" in bc or "cartoon" in bc or "animation" in bc:
+            return "мультфильмы"
+        if "сериал" in bc or "series" in bc:
+            return "сериалы"
+        if "фильм" in bc or "film" in bc or "movie" in bc:
+            return "фильмы"
+
+    # Фолбек: og:type
     m = re.search(r'property=["\']og:type["\'][^>]+content=["\']([^"\']+)["\']', html)
     if m:
         og = m.group(1).lower()
         if "video.tv" in og or "series" in og:
             return "сериалы"
+
+    # Фолбек: слово в URL слаге
+    slug = url.lower()
+    if "anime" in slug or "аниме" in slug:
+        return "аниме"
+    if "mult" in slug or "cartoon" in slug:
+        return "мультфильмы"
+    if "serial" in slug or "series" in slug:
+        return "сериалы"
+
     return "фильмы"
 
 

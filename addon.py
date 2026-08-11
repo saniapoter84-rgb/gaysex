@@ -427,14 +427,15 @@ def _fetch_cinemar_embed(embed_url):
 
 def _extract_cinemar_encoded(html):
     """Extract the #236z encoded playlist string from cinemar embed HTML."""
+    # Match #236z followed by any non-whitespace/non-quote chars (permissive — catches all base64+$ variants)
     for pat in (
-        r'["\']?file["\']?\s*:\s*["\']?(#236z[^\s"\'\\,]+)',
-        r'Playerjs\s*\([^)]*file\s*:\s*["\']?(#236z[^\s"\'\\,]+)',
-        r'(#236z[A-Za-z0-9+/=$%]+)',
+        r'file\s*:\s*["\']?(#236z[^"\'<>\s\\]{10,})',
+        r'["\']?(#236z[^"\'<>\s\\]{10,})',
     ):
         m = re.search(pat, html)
         if m:
             return m.group(1)
+    xbmc.log(f"RezkaLocal: #236z не найден. Начало embed HTML: {html[:800]}", xbmc.LOGWARNING)
     return None
 
 
