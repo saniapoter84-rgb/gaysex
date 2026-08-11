@@ -611,6 +611,61 @@ def _parse_quality_urls(file_str):
     return result
 
 
+def _fetch_hls_qualities(url, referer):
+    """Fetch HLS master manifest and return [(label, variant_url), ...] sorted best→worst.
+
+    Each variant_url points to a single-bitrate media playlist — no ABR switching.
+    Returns empty list if the URL is not a master manifest or on network error.
+    """
+    from urllib.parse import urljoin
+    try:
+        req = Request(url, headers={"User-Agent": _UA, "Referer": referer})
+        with _opener.open(req, timeout=20) as resp:
+            raw = resp.read()
+            text = raw.decode("utf-8", errors="replace")
+    except Exception as e:
+        xbmc.log(f"RezkaLocal: HLS manifest fetch failed: {e}", xbmc.LOGWARNING)
+        return []
+
+    variants = []
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if line.startswith("#EXT-X-STREAM-INF"):
+            res_m = re.search(r'RESOLUTION=(\d+)x(\d+)', line)
+            bw_m = re.search(r'BANDWIDTH=(\d+)', line)
+            # Next non-empty, non-comment line is the variant URI
+            j = i + 1
+            while j < len(lines) and (not lines[j].strip() or lines[j].strip().startswith("#")):
+                j += 1
+            if j < len(lines):
+                variant_uri = lines[j].strip()
+                if variant_uri:
+                    variant_url = urljoin(url, variant_uri)
+                    if res_m:
+                        label = f"{res_m.group(2)}p"
+                    elif bw_m:
+                        label = f"{int(bw_m.group(1)) // 1000}k"
+                    else:
+                        label = f"Поток {len(variants) + 1}"
+                    variants.append((label, variant_url))
+            i = j + 1
+        else:
+            i += 1
+
+    if not variants:
+        return []
+
+    # Sort descending by resolution height (or bandwidth number)
+    def _sort_key(item):
+        m = re.search(r'(\d+)', item[0])
+        return int(m.group(1)) if m else 0
+
+    variants.sort(key=_sort_key, reverse=True)
+    return variants
+
+
 def _load_kinogo_cache():
     try:
         with open(KINOGO_CACHE_PATH, "r", encoding="utf-8") as f:
@@ -740,17 +795,13 @@ def _show_kinogo_episodes(item, translator, season):
                 break
 
         if hls_file:
-            qualities = _parse_quality_urls(hls_file)
-            if len(qualities) == 1:
-                li.setProperty("IsPlayable", "true")
-                xbmcplugin.addDirectoryItem(HANDLE, _url(action="play", video_url=qualities[0][1]), li, False)
-            else:
-                xbmcplugin.addDirectoryItem(
-                    HANDLE,
-                    _url(action="list_kinogo_ep_qualities", title=title,
-                         translator=translator, season=str(s_idx), ep_idx=str(ep_idx)),
-                    li, True,
-                )
+            # Always route through quality folder so the user picks an explicit static bitrate
+            xbmcplugin.addDirectoryItem(
+                HANDLE,
+                _url(action="list_kinogo_ep_qualities", title=title,
+                     translator=translator, season=str(s_idx), ep_idx=str(ep_idx)),
+                li, True,
+            )
         else:
             continue
 
@@ -783,7 +834,17 @@ def _show_kinogo_ep_qualities(item, translator, season, ep_idx):
             hls_file = _node_file(voice)
             break
 
-    qualities = _parse_quality_urls(hls_file)
+    playerjs_qualities = _parse_quality_urls(hls_file)
+    best_url = playerjs_qualities[0][1] if playerjs_qualities else ""
+
+    qualities = []
+    if best_url and ".m3u8" in best_url:
+        referer = "https://kinogo.online/"
+        qualities = _fetch_hls_qualities(best_url, referer)
+
+    if not qualities:
+        qualities = playerjs_qualities
+
     if not qualities:
         _notify_error(f"URL не найден для озвучки: {translator}")
         xbmcplugin.endOfDirectory(HANDLE)
@@ -819,7 +880,17 @@ def _show_kinogo_movie_qualities(item, translator):
         if hls_file:
             break
 
-    qualities = _parse_quality_urls(hls_file)
+    playerjs_qualities = _parse_quality_urls(hls_file)
+    best_url = playerjs_qualities[0][1] if playerjs_qualities else ""
+
+    qualities = []
+    if best_url and ".m3u8" in best_url:
+        referer = "https://kinogo.online/"
+        qualities = _fetch_hls_qualities(best_url, referer)
+
+    if not qualities:
+        qualities = playerjs_qualities
+
     if not qualities:
         _notify_error(f"URL не найден для перевода: {translator}")
         xbmcplugin.endOfDirectory(HANDLE)
