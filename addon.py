@@ -6,8 +6,9 @@ import json
 import os
 import re
 import sys
+import time
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qsl, urlencode
+from urllib.parse import parse_qsl, unquote, urlencode
 from urllib.request import Request, build_opener, HTTPCookieProcessor
 
 import xbmc
@@ -355,6 +356,320 @@ def _fetch_qualities(item, translator_name, season=None, episode=None):
     return qualities
 
 
+# ── KinoGo / cinemar.cc helpers ──────────────────────────────────────────────
+
+KINOGO_COOKIE_PATH = os.path.join(ADDON_PATH, "kinogo_cookies.lwp")
+KINOGO_CACHE_PATH = os.path.join(ADDON_PATH, "kinogo_cache.json")
+KINOGO_CACHE_TTL = 1800  # 30 minutes
+
+_kinogo_jar = http.cookiejar.LWPCookieJar(KINOGO_COOKIE_PATH)
+try:
+    _kinogo_jar.load(ignore_discard=True, ignore_expires=True)
+except Exception:
+    pass
+_kinogo_opener = build_opener(HTTPCookieProcessor(_kinogo_jar))
+
+_KINOGO_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Encoding": "gzip, deflate",
+    "DNT": "1",
+    "Upgrade-Insecure-Requests": "1",
+}
+
+
+def _fetch_kinogo(url):
+    """Fetch a kinogo page using saved CF cookies when available."""
+    req = Request(url, headers=_KINOGO_HEADERS)
+    try:
+        html = _read_response(_kinogo_opener.open(req, timeout=20))
+        try:
+            _kinogo_jar.save(ignore_discard=True, ignore_expires=True)
+        except Exception:
+            pass
+        return html
+    except (HTTPError, URLError) as e:
+        raise RuntimeError(f"Не удалось загрузить kinogo ({e})")
+
+
+def _extract_cinemar_url(html):
+    """Extract cinemar.cc embed URL from kinogo page HTML."""
+    for pat in (
+        r'<iframe[^>]+src=["\']([^"\']*cinemar\.cc/embed/[^"\']+)["\']',
+        r'data-src=["\']([^"\']*cinemar\.cc/embed/[^"\']+)["\']',
+        r'"src"\s*:\s*"([^"]*cinemar\.cc/embed/[^"]+)"',
+        r"'src'\s*:\s*'([^']*cinemar\.cc/embed/[^']+)'",
+    ):
+        m = re.search(pat, html, re.IGNORECASE)
+        if m:
+            u = m.group(1)
+            return u if u.startswith("http") else "https:" + u
+    return None
+
+
+def _fetch_cinemar_embed(embed_url):
+    """Fetch cinemar.cc embed page."""
+    m = re.match(r'(https?://[^/]+)', embed_url)
+    referer = (m.group(1) + "/") if m else "https://cinemar.cc/"
+    req = Request(embed_url, headers={
+        "User-Agent": _UA,
+        "Referer": referer,
+        "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "Accept-Encoding": "gzip, deflate",
+    })
+    return _read_response(_opener.open(req, timeout=15))
+
+
+def _extract_cinemar_encoded(html):
+    """Extract the #236z encoded playlist string from cinemar embed HTML."""
+    for pat in (
+        r'["\']?file["\']?\s*:\s*["\']?(#236z[^\s"\'\\,]+)',
+        r'Playerjs\s*\([^)]*file\s*:\s*["\']?(#236z[^\s"\'\\,]+)',
+        r'(#236z[A-Za-z0-9+/=$%]+)',
+    ):
+        m = re.search(pat, html)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _decode_cinemar_playlist(encoded):
+    """
+    Decode a #236z encoded cinemar.cc playlist string to a Python list.
+    Encoding: split by '$', each segment ends with a rotation-amount char;
+    unshuffle by rotating left, join, base64-decode, latin-1 → percent-encode → unquote → JSON.
+    """
+    if encoded.startswith("#236z"):
+        encoded = encoded[5:]
+
+    parts = []
+    for seg in encoded.split("$"):
+        if not seg:
+            continue
+        idx = ord(seg[-1]) - 48
+        body = seg[:-1]
+        if 0 < idx <= len(body):
+            body = body[idx:] + body[:idx]
+        parts.append(body)
+
+    joined = "".join(parts)
+    padding = (4 - len(joined) % 4) % 4
+    raw = base64.b64decode(joined + "=" * padding)
+    latin = raw.decode("latin-1")
+    pct = "".join(f"%{ord(c):02X}" if ord(c) > 127 else c for c in latin)
+    return json.loads(unquote(pct))
+
+
+def _kinogo_get_translators(playlist):
+    """Return unique translator names (leaf nodes with 'file') from any playlist structure."""
+    names = []
+    seen = set()
+
+    def walk(node):
+        if "file" in node and "title" in node:
+            n = node["title"]
+            if n not in seen:
+                seen.add(n)
+                names.append(n)
+        for child in node.get("folder", []):
+            walk(child)
+
+    for item in playlist:
+        walk(item)
+    return names
+
+
+def _playlist_is_series(playlist):
+    """True if the playlist has at least two levels of folders (season/episode/voice)."""
+    if not playlist:
+        return False
+    sub = playlist[0].get("folder", [])
+    return bool(sub) and "folder" in sub[0]
+
+
+def _pick_hls(file_str):
+    """Pick best HLS URL from a 'url1 or url2' file string."""
+    parts = [p.strip() for p in file_str.split(" or ") if p.strip()]
+    if not parts:
+        return ""
+    url = next((p for p in reversed(parts) if "m3u8" in p or "hls" in p), parts[-1])
+    return ("https:" + url) if url.startswith("//") else url
+
+
+def _load_kinogo_cache():
+    try:
+        with open(KINOGO_CACHE_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_kinogo_cache(cache):
+    try:
+        with open(KINOGO_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        xbmc.log(f"RezkaLocal: kinogo cache save failed: {e}", xbmc.LOGWARNING)
+
+
+def _get_kinogo_playlist(page_url):
+    """
+    Return decoded cinemar.cc playlist for a kinogo URL, cached for KINOGO_CACHE_TTL seconds.
+    Raises RuntimeError on network / parse failure.
+    """
+    cache = _load_kinogo_cache()
+    entry = cache.get(page_url, {})
+    now = int(time.time())
+
+    if entry and now - entry.get("fetched_at", 0) < KINOGO_CACHE_TTL:
+        playlist = entry.get("playlist")
+        if playlist:
+            xbmc.log("RezkaLocal: kinogo cache hit", xbmc.LOGDEBUG)
+            return playlist
+
+    html = _fetch_kinogo(page_url)
+
+    embed_url = _extract_cinemar_url(html)
+    if not embed_url:
+        raise RuntimeError(
+            "cinemar.cc embed не найден на странице kinogo. "
+            "Возможно, Cloudflare блокирует запрос — попробуй с домашнего IP."
+        )
+
+    embed_html = _fetch_cinemar_embed(embed_url)
+    encoded = _extract_cinemar_encoded(embed_html)
+    if not encoded:
+        raise RuntimeError("Плейлист #236z не найден на странице cinemar.cc")
+
+    playlist = _decode_cinemar_playlist(encoded)
+
+    cache[page_url] = {"playlist": playlist, "fetched_at": now}
+    _save_kinogo_cache(cache)
+    return playlist
+
+
+def _show_kinogo_translators(item):
+    title = item["title"]
+    try:
+        playlist = _get_kinogo_playlist(item["url"])
+    except RuntimeError as e:
+        _notify_error(str(e))
+        xbmcplugin.endOfDirectory(HANDLE)
+        return
+
+    translators = _kinogo_get_translators(playlist)
+    if not translators:
+        _notify_error("Переводы не найдены в плейлисте cinemar.cc")
+        xbmcplugin.endOfDirectory(HANDLE)
+        return
+
+    is_series = "seasons" in item or _playlist_is_series(playlist)
+    next_action = "list_seasons" if is_series else "list_qualities"
+
+    for name in translators:
+        li = xbmcgui.ListItem(label=f"Озвучка: {name}")
+        xbmcplugin.addDirectoryItem(HANDLE, _url(action=next_action, title=title, translator=name), li, True)
+    xbmcplugin.endOfDirectory(HANDLE)
+
+
+def _show_kinogo_seasons(item, translator):
+    title = item["title"]
+    try:
+        playlist = _get_kinogo_playlist(item["url"])
+    except RuntimeError as e:
+        _notify_error(str(e))
+        xbmcplugin.endOfDirectory(HANDLE)
+        return
+
+    for s_idx, season_item in enumerate(playlist, 1):
+        label = season_item.get("title", f"Сезон {s_idx}")
+        li = xbmcgui.ListItem(label=label)
+        li.setInfo("video", {"title": label, "season": s_idx})
+        xbmcplugin.addDirectoryItem(
+            HANDLE,
+            _url(action="list_episodes", title=title, translator=translator, season=str(s_idx)),
+            li,
+            True,
+        )
+    xbmcplugin.endOfDirectory(HANDLE)
+
+
+def _show_kinogo_episodes(item, translator, season):
+    title = item["title"]
+    try:
+        playlist = _get_kinogo_playlist(item["url"])
+    except RuntimeError as e:
+        _notify_error(str(e))
+        xbmcplugin.endOfDirectory(HANDLE)
+        return
+
+    s_idx = int(season)
+    if s_idx < 1 or s_idx > len(playlist):
+        _notify_error(f"Сезон {season} не найден (доступно: {len(playlist)})")
+        xbmcplugin.endOfDirectory(HANDLE)
+        return
+
+    season_folder = playlist[s_idx - 1].get("folder", [])
+
+    for ep_idx, ep_item in enumerate(season_folder, 1):
+        ep_label = ep_item.get("title", f"Серия {ep_idx}")
+        li = xbmcgui.ListItem(label=ep_label)
+        li.setInfo("video", {"title": f"{title} {ep_label}", "episode": ep_idx, "season": s_idx})
+
+        hls_url = None
+        for voice in ep_item.get("folder", []):
+            if voice.get("title") == translator:
+                f = voice.get("file", "")
+                hls_url = _pick_hls(f) if f else None
+                break
+
+        if hls_url:
+            li.setProperty("IsPlayable", "true")
+            xbmcplugin.addDirectoryItem(HANDLE, _url(action="play", video_url=hls_url), li, False)
+        else:
+            li.setLabel(f"{ep_label} (нет: {translator})")
+            xbmcplugin.addDirectoryItem(HANDLE, "#", li, False)
+
+    xbmcplugin.endOfDirectory(HANDLE)
+
+
+def _show_kinogo_movie_qualities(item, translator):
+    title = item["title"]
+    try:
+        playlist = _get_kinogo_playlist(item["url"])
+    except RuntimeError as e:
+        _notify_error(str(e))
+        xbmcplugin.endOfDirectory(HANDLE)
+        return
+
+    hls_url = None
+    for node in playlist:
+        if node.get("title") == translator and "file" in node:
+            hls_url = _pick_hls(node["file"])
+            break
+        for sub in node.get("folder", []):
+            if sub.get("title") == translator and "file" in sub:
+                hls_url = _pick_hls(sub["file"])
+                break
+        if hls_url:
+            break
+
+    if hls_url:
+        li = xbmcgui.ListItem(label=f"Смотреть [{translator}]")
+        li.setInfo("video", {"title": f"{title} [{translator}]"})
+        li.setProperty("IsPlayable", "true")
+        xbmcplugin.addDirectoryItem(HANDLE, _url(action="play", video_url=hls_url), li, False)
+    else:
+        _notify_error(f"URL не найден для перевода: {translator}")
+
+    xbmcplugin.endOfDirectory(HANDLE)
+
+
 # ── Kodi helpers ──────────────────────────────────────────────────────────────
 
 def _url(**kwargs):
@@ -472,6 +787,10 @@ def show_translators(title):
         xbmcplugin.endOfDirectory(HANDLE)
         return
 
+    if item.get("source") == "kinogo":
+        _show_kinogo_translators(item)
+        return
+
     translators = item.get("translators", {})
     # New format: list of names. Old format: dict {name: {quality: url}}.
     names = translators if isinstance(translators, list) else list(translators.keys())
@@ -488,11 +807,15 @@ def show_qualities(title, translator):
     """
     Movies/cartoons quality menu.
     Old format: static URLs from database.
-    New format: fetch from rezka CDN API.
+    New format: fetch from rezka CDN API or kinogo cinemar playlist.
     """
     item = _find_item(title)
     if not item:
         xbmcplugin.endOfDirectory(HANDLE)
+        return
+
+    if item.get("source") == "kinogo":
+        _show_kinogo_movie_qualities(item, translator)
         return
 
     translators = item.get("translators", {})
@@ -522,6 +845,11 @@ def show_seasons(title, translator):
         xbmcgui.Dialog().ok("RezkaLocal", f"Сериал не найден в базе:\n{title}")
         xbmcplugin.endOfDirectory(HANDLE)
         return
+
+    if item.get("source") == "kinogo":
+        _show_kinogo_seasons(item, translator)
+        return
+
     if "seasons" not in item:
         xbmcgui.Dialog().ok("RezkaLocal", f"У записи «{title}» нет поля seasons.\nПроверь формат JSON.")
         xbmcplugin.endOfDirectory(HANDLE)
@@ -540,6 +868,10 @@ def show_episodes(title, translator, season):
     item = _find_item(title)
     if not item:
         xbmcplugin.endOfDirectory(HANDLE)
+        return
+
+    if item.get("source") == "kinogo":
+        _show_kinogo_episodes(item, translator, season)
         return
 
     hls_season = item.get("hls_episodes", {}).get(str(season), {})
