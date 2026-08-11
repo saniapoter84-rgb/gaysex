@@ -854,21 +854,18 @@ def _show_kinogo_ep_qualities(item, translator, season, ep_idx):
     playerjs_qualities = _parse_quality_urls(hls_file)
     best_url = playerjs_qualities[0][1] if playerjs_qualities else ""
 
-    # Refresh only when the hour token in the CDN URL has expired
+    # Refresh only when the hour token in the CDN URL has expired;
+    # if kinogo is unreachable, fall back silently to the cached (stale) URLs
     if best_url and _cdn_url_is_stale(best_url):
         try:
-            playlist = _get_kinogo_playlist(item["url"], force=True)
-        except RuntimeError as e:
-            _notify_error(str(e))
-            xbmcplugin.endOfDirectory(HANDLE)
-            return
-        ep_label, hls_file = _extract_ep(playlist)
-        if ep_label is None:
-            _notify_error(f"Серия {ep_n} не найдена")
-            xbmcplugin.endOfDirectory(HANDLE)
-            return
-        playerjs_qualities = _parse_quality_urls(hls_file)
-        best_url = playerjs_qualities[0][1] if playerjs_qualities else ""
+            fresh = _get_kinogo_playlist(item["url"], force=True)
+            fresh_label, fresh_hls = _extract_ep(fresh)
+            if fresh_label is not None:
+                ep_label, hls_file = fresh_label, fresh_hls
+                playerjs_qualities = _parse_quality_urls(hls_file)
+                best_url = playerjs_qualities[0][1] if playerjs_qualities else ""
+        except RuntimeError:
+            xbmc.log("RezkaLocal: stale URL refresh failed, using cached data", xbmc.LOGWARNING)
 
     qualities = []
     if best_url and ".m3u8" in best_url:
@@ -922,17 +919,18 @@ def _show_kinogo_movie_qualities(item, translator):
     playerjs_qualities = _parse_quality_urls(hls_file)
     best_url = playerjs_qualities[0][1] if playerjs_qualities else ""
 
-    # Refresh only when the hour token in the CDN URL has expired
+    # Refresh only when the hour token in the CDN URL has expired;
+    # if kinogo is unreachable, fall back silently to the cached (stale) URLs
     if best_url and _cdn_url_is_stale(best_url):
         try:
-            playlist = _get_kinogo_playlist(item["url"], force=True)
-        except RuntimeError as e:
-            _notify_error(str(e))
-            xbmcplugin.endOfDirectory(HANDLE)
-            return
-        hls_file = _extract_movie(playlist)
-        playerjs_qualities = _parse_quality_urls(hls_file)
-        best_url = playerjs_qualities[0][1] if playerjs_qualities else ""
+            fresh = _get_kinogo_playlist(item["url"], force=True)
+            fresh_hls = _extract_movie(fresh)
+            if fresh_hls:
+                hls_file = fresh_hls
+                playerjs_qualities = _parse_quality_urls(hls_file)
+                best_url = playerjs_qualities[0][1] if playerjs_qualities else ""
+        except RuntimeError:
+            xbmc.log("RezkaLocal: stale URL refresh failed, using cached data", xbmc.LOGWARNING)
 
     qualities = []
     if best_url and ".m3u8" in best_url:
