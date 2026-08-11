@@ -580,23 +580,34 @@ def _pick_hls(file_str):
 
 
 def _parse_quality_urls(file_str):
-    """Split 'url1080 or url720 or ...' into [(label, url), ...] ordered best→worst."""
+    """Split Playerjs '[720p]url or [1080p]url' or bare 'url1 or url2' into [(label, url), ...]."""
     if not file_str:
         return []
     raw = [p.strip() for p in file_str.split(" or ") if p.strip()]
     result = []
     for part in raw:
-        url = ("https:" + part) if part.startswith("//") else part
-        m = re.search(r'[/_](\d{3,4})[pP]?(?:[/_.]|$)', url)
-        if m:
-            label = f"{m.group(1)}p"
-        elif len(raw) == 1:
-            label = "Авто"
+        # Playerjs bracket prefix: [720p]//cdn/.../hls.m3u8
+        m_pfx = re.match(r'^\[([^\]]+)\]', part)
+        if m_pfx:
+            label = m_pfx.group(1)
+            part = part[m_pfx.end():]
         else:
-            label = f"Поток {len(result) + 1}"
+            label = None
+        url = ("https:" + part) if part.startswith("//") else part
+        if not label:
+            m = re.search(r'[/_](\d{3,4})[pP]?(?:[/_.]|$)', url)
+            if m:
+                label = f"{m.group(1)}p"
+            elif len(raw) == 1:
+                label = "Авто"
+            else:
+                label = f"Поток {len(result) + 1}"
         result.append((label, url))
-    if len(result) > 1 and all(re.search(r'\d+p', r[0]) for r in result):
-        result.sort(key=lambda x: int(re.search(r'\d+', x[0]).group()), reverse=True)
+    if len(result) > 1:
+        try:
+            result.sort(key=lambda x: int(re.search(r'\d+', x[0]).group()), reverse=True)
+        except (AttributeError, ValueError):
+            pass
     return result
 
 
@@ -741,8 +752,7 @@ def _show_kinogo_episodes(item, translator, season):
                     li, True,
                 )
         else:
-            li.setLabel(f"{ep_label} (нет: {translator})")
-            xbmcplugin.addDirectoryItem(HANDLE, "#", li, False)
+            continue
 
     xbmcplugin.endOfDirectory(HANDLE)
 
