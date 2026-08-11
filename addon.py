@@ -433,8 +433,8 @@ def _fetch_cinemar_embed(embed_url, page_referer=None):
 
 
 def _extract_cinemar_encoded(html):
-    """Extract encoded playlist string (#236z, #237T, or any #2NN<letter>) from cinemar embed HTML."""
-    _ENC = r'#2\d{2}[a-zA-Z][^"\'<>\s\\]{10,}'
+    """Extract encoded playlist string (#236z, #237T, or any #2NN...) from cinemar embed HTML."""
+    _ENC = r'#2\d{2}[^"\'<>\s\\]{10,}'
     for pat in (
         # JSON key with quotes: "file":"#2..."  (Cinemar({..."file":"#237T..."...}))
         rf'"file"\s*:\s*"({_ENC})"',
