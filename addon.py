@@ -524,7 +524,7 @@ def _decode_cinemar_237T(encoded):
 
 def _decode_cinemar_playlist(encoded):
     """Dispatch to the right decoder based on the encoded string prefix."""
-    xbmc.log(f"RezkaLocal: cinemar encoded prefix={encoded[:12]!r}", xbmc.LOGERROR)
+    xbmc.log(f"RezkaLocal: cinemar encoded prefix={encoded[:12]!r}", xbmc.LOGDEBUG)
     if encoded.startswith("#236z"):
         return _decode_cinemar_236z(encoded)
     if encoded.startswith("#2"):
@@ -539,6 +539,10 @@ def _node_file(node):
     return node.get("file") or node.get("dlink") or ""
 
 
+def _strip_html(text):
+    return re.sub(r'<[^>]+>', '', text or '').strip()
+
+
 def _kinogo_get_translators(playlist):
     """Return unique translator names (leaf nodes with 'file' or 'dlink') from any playlist structure."""
     names = []
@@ -546,7 +550,7 @@ def _kinogo_get_translators(playlist):
 
     def walk(node):
         if _node_file(node) and "title" in node:
-            n = node["title"]
+            n = _strip_html(node["title"])
             if n not in seen:
                 seen.add(n)
                 names.append(n)
@@ -663,7 +667,7 @@ def _show_kinogo_seasons(item, translator):
         return
 
     for s_idx, season_item in enumerate(playlist, 1):
-        label = season_item.get("title", f"Сезон {s_idx}")
+        label = _strip_html(season_item.get("title", f"Сезон {s_idx}"))
         li = xbmcgui.ListItem(label=label)
         li.setInfo("video", {"title": label, "season": s_idx})
         xbmcplugin.addDirectoryItem(
@@ -693,13 +697,13 @@ def _show_kinogo_episodes(item, translator, season):
     season_folder = playlist[s_idx - 1].get("folder", [])
 
     for ep_idx, ep_item in enumerate(season_folder, 1):
-        ep_label = ep_item.get("title", f"Серия {ep_idx}")
+        ep_label = _strip_html(ep_item.get("title", f"Серия {ep_idx}"))
         li = xbmcgui.ListItem(label=ep_label)
         li.setInfo("video", {"title": f"{title} {ep_label}", "episode": ep_idx, "season": s_idx})
 
         hls_url = None
         for voice in ep_item.get("folder", []):
-            if voice.get("title") == translator:
+            if _strip_html(voice.get("title", "")) == translator:
                 f = _node_file(voice)
                 hls_url = _pick_hls(f) if f else None
                 break
@@ -996,7 +1000,11 @@ def show_episode_qualities(title, translator, season, episode):
 
 
 def play_video(video_url):
-    headers = urlencode({"User-Agent": _UA, "Referer": "https://rezka.ag/"})
+    if any(d in video_url for d in ("cinemap.cc", "cinemar.cc", "kinogo")):
+        referer = "https://kinogo.online/"
+    else:
+        referer = "https://rezka.ag/"
+    headers = urlencode({"User-Agent": _UA, "Referer": referer})
     li = xbmcgui.ListItem(path=f"{video_url}|{headers}")
     xbmcplugin.setResolvedUrl(HANDLE, True, listitem=li)
 
