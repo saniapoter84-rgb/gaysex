@@ -611,6 +611,14 @@ def _parse_quality_urls(file_str):
     return result
 
 
+def _cdn_url_is_stale(url):
+    """Return True if the CDN URL's hour token (:YYYYMMDDhh/) doesn't match the current hour."""
+    m = re.search(r':(\d{10})/', url)
+    if not m:
+        return False
+    return m.group(1) != time.strftime("%Y%m%d%H")
+
+
 def _fetch_hls_qualities(url, referer):
     """Fetch HLS master manifest and return [(label, variant_url), ...] sorted best→worst.
 
@@ -814,33 +822,53 @@ def _show_kinogo_episodes(item, translator, season):
 
 def _show_kinogo_ep_qualities(item, translator, season, ep_idx):
     title = item["title"]
-    # Always fetch fresh — CDN URLs are time-signed and must never be served from cache
+    s_idx = int(season)
+    ep_n = int(ep_idx)
+
+    def _extract_ep(pl):
+        sf = pl[s_idx - 1].get("folder", []) if s_idx <= len(pl) else []
+        if ep_n < 1 or ep_n > len(sf):
+            return None, ""
+        ep = sf[ep_n - 1]
+        label = _strip_html(ep.get("title", f"Серия {ep_n}"))
+        hls = ""
+        for voice in ep.get("folder", []):
+            if _strip_html(voice.get("title", "")) == translator:
+                hls = _node_file(voice)
+                break
+        return label, hls
+
     try:
-        playlist = _get_kinogo_playlist(item["url"], force=True)
+        playlist = _get_kinogo_playlist(item["url"])
     except RuntimeError as e:
         _notify_error(str(e))
         xbmcplugin.endOfDirectory(HANDLE)
         return
 
-    s_idx = int(season)
-    ep_n = int(ep_idx)
-    season_folder = playlist[s_idx - 1].get("folder", []) if s_idx <= len(playlist) else []
-    if ep_n < 1 or ep_n > len(season_folder):
+    ep_label, hls_file = _extract_ep(playlist)
+    if ep_label is None:
         _notify_error(f"Серия {ep_n} не найдена")
         xbmcplugin.endOfDirectory(HANDLE)
         return
 
-    ep_item = season_folder[ep_n - 1]
-    ep_label = _strip_html(ep_item.get("title", f"Серия {ep_n}"))
-
-    hls_file = ""
-    for voice in ep_item.get("folder", []):
-        if _strip_html(voice.get("title", "")) == translator:
-            hls_file = _node_file(voice)
-            break
-
     playerjs_qualities = _parse_quality_urls(hls_file)
     best_url = playerjs_qualities[0][1] if playerjs_qualities else ""
+
+    # Refresh only when the hour token in the CDN URL has expired
+    if best_url and _cdn_url_is_stale(best_url):
+        try:
+            playlist = _get_kinogo_playlist(item["url"], force=True)
+        except RuntimeError as e:
+            _notify_error(str(e))
+            xbmcplugin.endOfDirectory(HANDLE)
+            return
+        ep_label, hls_file = _extract_ep(playlist)
+        if ep_label is None:
+            _notify_error(f"Серия {ep_n} не найдена")
+            xbmcplugin.endOfDirectory(HANDLE)
+            return
+        playerjs_qualities = _parse_quality_urls(hls_file)
+        best_url = playerjs_qualities[0][1] if playerjs_qualities else ""
 
     qualities = []
     if best_url and ".m3u8" in best_url:
@@ -868,28 +896,43 @@ def _show_kinogo_ep_qualities(item, translator, season, ep_idx):
 
 def _show_kinogo_movie_qualities(item, translator):
     title = item["title"]
-    # Always fetch fresh — CDN URLs are time-signed and must never be served from cache
+
+    def _extract_movie(pl):
+        hls = ""
+        for node in pl:
+            if _strip_html(node.get("title", "")) == translator and _node_file(node):
+                hls = _node_file(node)
+                break
+            for sub in node.get("folder", []):
+                if _strip_html(sub.get("title", "")) == translator and _node_file(sub):
+                    hls = _node_file(sub)
+                    break
+            if hls:
+                break
+        return hls
+
     try:
-        playlist = _get_kinogo_playlist(item["url"], force=True)
+        playlist = _get_kinogo_playlist(item["url"])
     except RuntimeError as e:
         _notify_error(str(e))
         xbmcplugin.endOfDirectory(HANDLE)
         return
 
-    hls_file = ""
-    for node in playlist:
-        if _strip_html(node.get("title", "")) == translator and _node_file(node):
-            hls_file = _node_file(node)
-            break
-        for sub in node.get("folder", []):
-            if _strip_html(sub.get("title", "")) == translator and _node_file(sub):
-                hls_file = _node_file(sub)
-                break
-        if hls_file:
-            break
-
+    hls_file = _extract_movie(playlist)
     playerjs_qualities = _parse_quality_urls(hls_file)
     best_url = playerjs_qualities[0][1] if playerjs_qualities else ""
+
+    # Refresh only when the hour token in the CDN URL has expired
+    if best_url and _cdn_url_is_stale(best_url):
+        try:
+            playlist = _get_kinogo_playlist(item["url"], force=True)
+        except RuntimeError as e:
+            _notify_error(str(e))
+            xbmcplugin.endOfDirectory(HANDLE)
+            return
+        hls_file = _extract_movie(playlist)
+        playerjs_qualities = _parse_quality_urls(hls_file)
+        best_url = playerjs_qualities[0][1] if playerjs_qualities else ""
 
     qualities = []
     if best_url and ".m3u8" in best_url:
