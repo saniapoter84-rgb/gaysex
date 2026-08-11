@@ -433,33 +433,25 @@ def _fetch_cinemar_embed(embed_url, page_referer=None):
 
 
 def _extract_cinemar_encoded(html):
-    """Extract the #236z encoded playlist string from cinemar embed HTML."""
+    """Extract encoded playlist string (#236z, #237T, or any #2NN<letter>) from cinemar embed HTML."""
+    _ENC = r'#2\d{2}[a-zA-Z][^"\'<>\s\\]{10,}'
     for pat in (
-        # Прямо в Playerjs({file:"#236z..."}) или {file:'#236z...'}
-        r'file\s*:\s*["\']?(#236z[^"\'<>\s\\]{10,})',
-        # В JS-переменной: var src = "#236z..."; или let f="#236z..."
-        r'(?:var|let|const)\s+\w+\s*=\s*["\']?(#236z[^"\'<>\s\\]{10,})',
-        # data-атрибут: data-file="#236z..."
-        r'data-(?:file|src|playlist)\s*=\s*["\']?(#236z[^"\'<>\s\\]{10,})',
-        # Ловим что угодно с #236z (последний шанс)
-        r'(#236z[^"\'<>\s\\]{10,})',
+        rf'file\s*:\s*["\']?({_ENC})',
+        rf'(?:var|let|const)\s+\w+\s*=\s*["\']?({_ENC})',
+        rf'data-(?:file|src|playlist)\s*=\s*["\']?({_ENC})',
+        rf'({_ENC})',
     ):
         m = re.search(pat, html)
         if m:
             return m.group(1)
-    xbmc.log(f"RezkaLocal: #236z не найден. Начало embed HTML: {html[:1200]}", xbmc.LOGWARNING)
+    xbmc.log(f"RezkaLocal: encoded playlist не найден. Начало embed HTML: {html[:1200]}", xbmc.LOGWARNING)
     return None
 
 
-def _decode_cinemar_playlist(encoded):
-    """
-    Decode a #236z encoded cinemar.cc playlist string to a Python list.
-    Encoding: split by '$', each segment ends with a rotation-amount char;
-    unshuffle by rotating left, join, base64-decode, latin-1 → percent-encode → unquote → JSON.
-    """
+def _decode_cinemar_236z(encoded):
+    """Decode legacy #236z (Playerjs) playlist."""
     if encoded.startswith("#236z"):
         encoded = encoded[5:]
-
     parts = []
     for seg in encoded.split("$"):
         if not seg:
@@ -469,6 +461,47 @@ def _decode_cinemar_playlist(encoded):
         if 0 < idx <= len(body):
             body = body[idx:] + body[:idx]
         parts.append(body)
+    joined = "".join(parts)
+    padding = (4 - len(joined) % 4) % 4
+    raw = base64.b64decode(joined + "=" * padding)
+    latin = raw.decode("latin-1")
+    pct = "".join(f"%{ord(c):02X}" if ord(c) > 127 else c for c in latin)
+    return json.loads(unquote(pct))
+
+
+def _decode_cinemar_237T(encoded):
+    """
+    Decode Cinemar player #237T playlist.
+    Format: "#2" + 2-digit delimiter code + data split by that delimiter char.
+    Each segment longer than 32 chars is unshuffled:
+      result = seg[2t : len-t-1] + seg[0:t]   where t = int(last_char)
+    Then base64-decode → latin-1 → percent-encode high bytes → unquote → JSON.
+    """
+    e = encoded[2:]          # strip "#2" → "37TA0M2V0..."
+    try:
+        dm = int(e[:2])      # "37" → 37
+    except ValueError:
+        dm = 36              # fallback
+    delimiter = chr(dm)      # chr(37) = '%'
+    body = e[2:]             # "TA0M2V0..."
+    _ml = 32
+
+    parts = []
+    for seg in body.split(delimiter):
+        if not seg:
+            continue
+        if len(seg) > _ml:
+            try:
+                t = int(seg[-1])
+            except ValueError:
+                parts.append(seg)
+                continue
+            # JS: seg.substr(2*t, seg.length-3*t-1) + seg.substr(0, t)
+            # Python equiv (substr second arg is LENGTH):
+            unshuffled = seg[2 * t: len(seg) - t - 1] + seg[:t]
+            parts.append(unshuffled)
+        else:
+            parts.append(seg)
 
     joined = "".join(parts)
     padding = (4 - len(joined) % 4) % 4
@@ -478,13 +511,25 @@ def _decode_cinemar_playlist(encoded):
     return json.loads(unquote(pct))
 
 
+def _decode_cinemar_playlist(encoded):
+    """Dispatch to the right decoder based on the encoded string prefix."""
+    if encoded.startswith("#237"):
+        return _decode_cinemar_237T(encoded)
+    return _decode_cinemar_236z(encoded)
+
+
+def _node_file(node):
+    """Return the raw file/dlink string from a playlist leaf node, or ''."""
+    return node.get("file") or node.get("dlink") or ""
+
+
 def _kinogo_get_translators(playlist):
-    """Return unique translator names (leaf nodes with 'file') from any playlist structure."""
+    """Return unique translator names (leaf nodes with 'file' or 'dlink') from any playlist structure."""
     names = []
     seen = set()
 
     def walk(node):
-        if "file" in node and "title" in node:
+        if _node_file(node) and "title" in node:
             n = node["title"]
             if n not in seen:
                 seen.add(n)
@@ -557,9 +602,11 @@ def _get_kinogo_playlist(page_url):
     embed_html = _fetch_cinemar_embed(embed_url, page_referer=page_url)
     encoded = _extract_cinemar_encoded(embed_html)
     if not encoded:
-        raise RuntimeError("Плейлист #236z не найден на странице cinemar.cc")
+        raise RuntimeError("Зашифрованный плейлист не найден на странице cinemar.cc")
 
+    xbmc.log(f"RezkaLocal: cinemar encoded prefix: {encoded[:10]}", xbmc.LOGDEBUG)
     playlist = _decode_cinemar_playlist(encoded)
+    xbmc.log(f"RezkaLocal: cinemar playlist sample: {json.dumps(playlist[:1], ensure_ascii=False)[:400]}", xbmc.LOGDEBUG)
 
     cache[page_url] = {"playlist": playlist, "fetched_at": now}
     _save_kinogo_cache(cache)
@@ -637,7 +684,7 @@ def _show_kinogo_episodes(item, translator, season):
         hls_url = None
         for voice in ep_item.get("folder", []):
             if voice.get("title") == translator:
-                f = voice.get("file", "")
+                f = _node_file(voice)
                 hls_url = _pick_hls(f) if f else None
                 break
 
@@ -662,12 +709,14 @@ def _show_kinogo_movie_qualities(item, translator):
 
     hls_url = None
     for node in playlist:
-        if node.get("title") == translator and "file" in node:
-            hls_url = _pick_hls(node["file"])
+        f = _node_file(node)
+        if node.get("title") == translator and f:
+            hls_url = _pick_hls(f)
             break
         for sub in node.get("folder", []):
-            if sub.get("title") == translator and "file" in sub:
-                hls_url = _pick_hls(sub["file"])
+            sf = _node_file(sub)
+            if sub.get("title") == translator and sf:
+                hls_url = _pick_hls(sf)
                 break
         if hls_url:
             break
