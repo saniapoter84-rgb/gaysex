@@ -619,10 +619,13 @@ def _fetch_hls_qualities(url, referer):
     """
     from urllib.parse import urljoin
     try:
-        req = Request(url, headers={"User-Agent": _UA, "Referer": referer})
-        with _opener.open(req, timeout=20) as resp:
-            raw = resp.read()
-            text = raw.decode("utf-8", errors="replace")
+        req = Request(url, headers={
+            "User-Agent": _UA,
+            "Referer": referer,
+            "Accept-Encoding": "gzip, deflate",
+        })
+        resp = _opener.open(req, timeout=35)
+        text = _read_response(resp)
     except Exception as e:
         xbmc.log(f"RezkaLocal: HLS manifest fetch failed: {e}", xbmc.LOGWARNING)
         return []
