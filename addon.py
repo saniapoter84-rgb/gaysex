@@ -1086,6 +1086,23 @@ def play_video(video_url):
         referer = "https://kinogo.online/"
     else:
         referer = "https://rezka.ag/"
+
+    if ".m3u8" in video_url:
+        try:
+            xbmcaddon.Addon("inputstream.adaptive")
+            li = xbmcgui.ListItem(path=video_url)
+            li.setMimeType("application/x-mpegURL")
+            li.setContentLookup(False)
+            li.setProperty("inputstream", "inputstream.adaptive")
+            li.setProperty("inputstream.adaptive.manifest_type", "hls")
+            hdr = f"Referer={referer}&User-Agent={_UA}"
+            li.setProperty("inputstream.adaptive.stream_headers", hdr)
+            li.setProperty("inputstream.adaptive.manifest_headers", hdr)
+            xbmcplugin.setResolvedUrl(HANDLE, True, listitem=li)
+            return
+        except Exception:
+            pass
+
     headers = urlencode({"User-Agent": _UA, "Referer": referer})
     li = xbmcgui.ListItem(path=f"{video_url}|{headers}")
     xbmcplugin.setResolvedUrl(HANDLE, True, listitem=li)
