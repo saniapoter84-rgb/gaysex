@@ -627,8 +627,10 @@ def _fetch_hls_qualities(url, referer):
         resp = _opener.open(req, timeout=35)
         text = _read_response(resp)
     except Exception as e:
-        xbmc.log(f"RezkaLocal: HLS manifest fetch failed: {e}", xbmc.LOGWARNING)
+        xbmc.log(f"RezkaLocal: HLS manifest fetch failed [{url}]: {e}", xbmc.LOGWARNING)
         return []
+
+    xbmc.log(f"RezkaLocal: HLS manifest fetched [{url}] first300: {text[:300]!r}", xbmc.LOGDEBUG)
 
     variants = []
     lines = text.splitlines()
@@ -837,6 +839,7 @@ def _show_kinogo_ep_qualities(item, translator, season, ep_idx):
             hls_file = _node_file(voice)
             break
 
+    xbmc.log(f"RezkaLocal: ep_qualities hls_file={hls_file[:200]!r}", xbmc.LOGDEBUG)
     playerjs_qualities = _parse_quality_urls(hls_file)
     best_url = playerjs_qualities[0][1] if playerjs_qualities else ""
 
@@ -844,6 +847,8 @@ def _show_kinogo_ep_qualities(item, translator, season, ep_idx):
     if best_url and ".m3u8" in best_url:
         referer = "https://kinogo.online/"
         qualities = _fetch_hls_qualities(best_url, referer)
+
+    xbmc.log(f"RezkaLocal: ep_qualities playerjs={playerjs_qualities} hls_variants={qualities}", xbmc.LOGDEBUG)
 
     if not qualities:
         qualities = playerjs_qualities
