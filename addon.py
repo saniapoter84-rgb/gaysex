@@ -412,14 +412,21 @@ def _extract_cinemar_url(html):
     return None
 
 
-def _fetch_cinemar_embed(embed_url):
-    """Fetch cinemar.cc embed page."""
-    m = re.match(r'(https?://[^/]+)', embed_url)
-    referer = (m.group(1) + "/") if m else "https://cinemar.cc/"
+def _fetch_cinemar_embed(embed_url, page_referer=None):
+    """
+    Fetch cinemar.cc embed page.
+    page_referer must be the kinogo page URL that contains the iframe —
+    cinemar.cc checks it and returns an empty/blocked page without it.
+    """
+    m_domain = re.match(r'(https?://[^/]+)', page_referer or "")
+    origin = m_domain.group(1) if m_domain else "https://kinogo.online"
+    referer = page_referer or "https://kinogo.online/"
     req = Request(embed_url, headers={
         "User-Agent": _UA,
         "Referer": referer,
+        "Origin": origin,
         "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
         "Accept-Encoding": "gzip, deflate",
     })
     return _read_response(_opener.open(req, timeout=15))
@@ -427,15 +434,20 @@ def _fetch_cinemar_embed(embed_url):
 
 def _extract_cinemar_encoded(html):
     """Extract the #236z encoded playlist string from cinemar embed HTML."""
-    # Match #236z followed by any non-whitespace/non-quote chars (permissive — catches all base64+$ variants)
     for pat in (
+        # Прямо в Playerjs({file:"#236z..."}) или {file:'#236z...'}
         r'file\s*:\s*["\']?(#236z[^"\'<>\s\\]{10,})',
-        r'["\']?(#236z[^"\'<>\s\\]{10,})',
+        # В JS-переменной: var src = "#236z..."; или let f="#236z..."
+        r'(?:var|let|const)\s+\w+\s*=\s*["\']?(#236z[^"\'<>\s\\]{10,})',
+        # data-атрибут: data-file="#236z..."
+        r'data-(?:file|src|playlist)\s*=\s*["\']?(#236z[^"\'<>\s\\]{10,})',
+        # Ловим что угодно с #236z (последний шанс)
+        r'(#236z[^"\'<>\s\\]{10,})',
     ):
         m = re.search(pat, html)
         if m:
             return m.group(1)
-    xbmc.log(f"RezkaLocal: #236z не найден. Начало embed HTML: {html[:800]}", xbmc.LOGWARNING)
+    xbmc.log(f"RezkaLocal: #236z не найден. Начало embed HTML: {html[:1200]}", xbmc.LOGWARNING)
     return None
 
 
@@ -542,7 +554,7 @@ def _get_kinogo_playlist(page_url):
             "Возможно, Cloudflare блокирует запрос — попробуй с домашнего IP."
         )
 
-    embed_html = _fetch_cinemar_embed(embed_url)
+    embed_html = _fetch_cinemar_embed(embed_url, page_referer=page_url)
     encoded = _extract_cinemar_encoded(embed_html)
     if not encoded:
         raise RuntimeError("Плейлист #236z не найден на странице cinemar.cc")
