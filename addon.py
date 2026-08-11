@@ -436,9 +436,15 @@ def _extract_cinemar_encoded(html):
     """Extract encoded playlist string (#236z, #237T, or any #2NN<letter>) from cinemar embed HTML."""
     _ENC = r'#2\d{2}[a-zA-Z][^"\'<>\s\\]{10,}'
     for pat in (
+        # JSON key with quotes: "file":"#2..."  (Cinemar({..."file":"#237T..."...}))
+        rf'"file"\s*:\s*"({_ENC})"',
+        # JS object literal without quotes on key: file: "#2..."
         rf'file\s*:\s*["\']?({_ENC})',
+        # JS variable assignment
         rf'(?:var|let|const)\s+\w+\s*=\s*["\']?({_ENC})',
+        # data attribute
         rf'data-(?:file|src|playlist)\s*=\s*["\']?({_ENC})',
+        # catch-all: first occurrence of any #2NN<letter>... in the page
         rf'({_ENC})',
     ):
         m = re.search(pat, html)
@@ -504,7 +510,12 @@ def _decode_cinemar_237T(encoded):
             parts.append(seg)
 
     joined = "".join(parts)
-    padding = (4 - len(joined) % 4) % 4
+    rem = len(joined) % 4
+    if rem == 1:
+        raise RuntimeError(
+            f"#236z decode: joined base64 length {len(joined)} % 4 == 1 — wrong decoder or corrupted data"
+        )
+    padding = (4 - rem) % 4
     raw = base64.b64decode(joined + "=" * padding)
     latin = raw.decode("latin-1")
     pct = "".join(f"%{ord(c):02X}" if ord(c) > 127 else c for c in latin)
@@ -513,7 +524,12 @@ def _decode_cinemar_237T(encoded):
 
 def _decode_cinemar_playlist(encoded):
     """Dispatch to the right decoder based on the encoded string prefix."""
-    if encoded.startswith("#237"):
+    xbmc.log(f"RezkaLocal: cinemar encoded prefix={encoded[:12]!r}", xbmc.LOGERROR)
+    if encoded.startswith("#236z"):
+        return _decode_cinemar_236z(encoded)
+    if encoded.startswith("#2"):
+        # Any #2NNX format (e.g. #237T, #236T, #236A) uses the Cinemar algorithm.
+        # The 2-digit code is the ASCII code of the delimiter char.
         return _decode_cinemar_237T(encoded)
     return _decode_cinemar_236z(encoded)
 
