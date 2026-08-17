@@ -8,9 +8,9 @@
     </requires>
     <extension point="xbmc.addon.repository" name="Rezka Local Repository">
         <dir>
-            <info compressed="false">https://raw.githubusercontent.com/saniapoter84-rgb/gaysex/main/addons.xml</info>
-            <checksum>https://raw.githubusercontent.com/saniapoter84-rgb/gaysex/main/addons.xml.md5</checksum>
-            <packages>https://raw.githubusercontent.com/saniapoter84-rgb/gaysex/main/</packages>
+            <info compressed="false">https://cdn.jsdelivr.net/gh/saniapoter84-rgb/gaysex@main/addons.xml</info>
+            <checksum>https://cdn.jsdelivr.net/gh/saniapoter84-rgb/gaysex@main/addons.xml.md5</checksum>
+            <packages>https://cdn.jsdelivr.net/gh/saniapoter84-rgb/gaysex@main/</packages>
         </dir>
     </extension>
     <extension point="xbmc.addon.metadata">
