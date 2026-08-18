@@ -57,6 +57,26 @@ def _read_response(resp):
         return raw.decode("utf-8", errors="replace")
 
 
+_GATEWAY_RETRY_CODES = (502, 503, 504)
+
+
+def _open_with_gateway_retry(req, timeout, attempts=3, delay=2):
+    """Open a request, retrying on transient gateway errors (502/503/504)
+    from rezka.ag's Anubis anti-bot proxy, which times out under load far
+    more often than the origin site itself does."""
+    for attempt in range(attempts):
+        try:
+            return _opener.open(req, timeout=timeout)
+        except HTTPError as e:
+            if e.code not in _GATEWAY_RETRY_CODES or attempt == attempts - 1:
+                raise
+            xbmc.log(
+                f"RezkaLocal: {e.code} от {req.full_url}, повтор {attempt + 1}/{attempts - 1}",
+                xbmc.LOGWARNING,
+            )
+            time.sleep(delay)
+
+
 def _solve_anubis(html, url):
     """
     Solve Anubis PoW challenge and return the real page content.
@@ -97,12 +117,12 @@ def _solve_anubis(html, url):
     })
     submit_url = f"https://rezka.ag{base_prefix}/.within.website/x/cmd/anubis/api/pass-challenge?{params}"
     req = Request(submit_url, headers=_BASE_HEADERS)
-    return _read_response(_opener.open(req, timeout=20))
+    return _read_response(_open_with_gateway_retry(req, timeout=20))
 
 
 def _fetch(url):
     req = Request(url, headers=_BASE_HEADERS)
-    html = _read_response(_opener.open(req, timeout=15))
+    html = _read_response(_open_with_gateway_retry(req, timeout=15))
     if "anubis_challenge" in html:
         real = _solve_anubis(html, url)
         if real:
