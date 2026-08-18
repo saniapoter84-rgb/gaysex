@@ -1,5 +1,4 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Kodi repository index for repository.rezka_local -->
 <addons>
 <addon id="plugin.video.rezka_local" name="Rezka Local Base" version="1.1.0" provider-name="Kurumi">
     <requires>
@@ -12,6 +11,19 @@
         <platform>all</platform>
         <summary lang="ru">Просмотр локальной базы потоков с Резки</summary>
         <description lang="ru">Плагин читает rezka_database.json и воспроизводит m3u8 потоки в Kodi.</description>
+    </extension>
+</addon>
+<addon id="repository.rezka_local" name="Rezka Local Repository" version="1.0.4" provider-name="Kurumi">
+    <extension point="xbmc.addon.repository" name="Rezka Local Repository">
+        <dir>
+            <info compressed="false">https://raw.githubusercontent.com/saniapoter84-rgb/gaysex/main/repo/addons.xml</info>
+            <checksum>https://raw.githubusercontent.com/saniapoter84-rgb/gaysex/main/repo/addons.xml.md5</checksum>
+            <datadir zip="true">https://raw.githubusercontent.com/saniapoter84-rgb/gaysex/main/</datadir>
+        </dir>
+    </extension>
+    <extension point="xbmc.addon.metadata">
+        <summary lang="ru">Репозиторий плагинов Rezka Local</summary>
+        <platform>all</platform>
     </extension>
 </addon>
 </addons>
