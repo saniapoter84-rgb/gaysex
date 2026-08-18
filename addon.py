@@ -8,7 +8,7 @@ import re
 import sys
 import time
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qsl, unquote, urlencode
+from urllib.parse import parse_qsl, unquote, urlencode, urlsplit
 from urllib.request import Request, build_opener, HTTPCookieProcessor
 
 import xbmc
@@ -36,13 +36,26 @@ _opener = build_opener(HTTPCookieProcessor(_cookie_jar))
 
 # ── Network / rezka helpers ───────────────────────────────────────────────────
 
-_BASE_HEADERS = {
-    "User-Agent": _UA,
-    "Referer": "https://rezka.ag/",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
-    "Accept-Encoding": "gzip, deflate",
-}
+_DEFAULT_REZKA_DOMAIN = "https://rezka.ag"
+
+
+def _domain_of(url):
+    """Return scheme://host for a URL, e.g. 'https://hdrezka-home.tv'."""
+    parts = urlsplit(url)
+    return f"{parts.scheme}://{parts.netloc}" if parts.netloc else _DEFAULT_REZKA_DOMAIN
+
+
+def _headers_for(referer_url):
+    """Base request headers with the Referer set to the given page's own domain,
+    so a mirror stored in rezka_database.json (e.g. hdrezka-home.tv) is used
+    consistently instead of always pointing back at rezka.ag."""
+    return {
+        "User-Agent": _UA,
+        "Referer": referer_url,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+        "Accept-Encoding": "gzip, deflate",
+    }
 
 
 def _read_response(resp):
@@ -123,13 +136,13 @@ def _solve_anubis(html, url):
         "redir": url,
         "elapsedTime": "1337",
     })
-    submit_url = f"https://rezka.ag{base_prefix}/.within.website/x/cmd/anubis/api/pass-challenge?{params}"
-    req = Request(submit_url, headers=_BASE_HEADERS)
+    submit_url = f"{_domain_of(url)}{base_prefix}/.within.website/x/cmd/anubis/api/pass-challenge?{params}"
+    req = Request(submit_url, headers=_headers_for(url))
     return _read_response(_open_with_gateway_retry(req, timeout=20))
 
 
 def _fetch(url):
-    req = Request(url, headers=_BASE_HEADERS)
+    req = Request(url, headers=_headers_for(url))
     html = _read_response(_open_with_gateway_retry(req, timeout=15))
     if "anubis_challenge" in html:
         real = _solve_anubis(html, url)
@@ -280,13 +293,14 @@ def _call_cdn_api(content_id, translator_id, action, season=None, episode=None, 
     if episode is not None:
         data["episode"] = str(episode)
 
+    domain = _domain_of(page_url) if page_url else _DEFAULT_REZKA_DOMAIN
     req = Request(
-        "https://rezka.ag/ajax/get_cdn_series/",
+        f"{domain}/ajax/get_cdn_series/",
         data=urlencode(data).encode(),
         headers={
             "User-Agent": _UA,
             "X-Requested-With": "XMLHttpRequest",
-            "Referer": page_url or "https://rezka.ag/",
+            "Referer": page_url or f"{domain}/",
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept-Encoding": "gzip, deflate",
         },
@@ -661,6 +675,10 @@ def _fetch_hls_qualities(url, referer):
             "Accept-Encoding": "gzip, deflate",
         })
         resp = _opener.open(req, timeout=35)
+        # The CDN 302-redirects to a specific edge host (e.g. stream.voidboost.one
+        # -> flerovium.stream.voidboost.one); relative variant URIs in the manifest
+        # must resolve against that final host, not the pre-redirect one.
+        base_url = resp.geturl()
         text = _read_response(resp)
     except Exception as e:
         xbmc.log(f"RezkaLocal: HLS manifest fetch failed [{url}]: {e}", xbmc.LOGWARNING)
@@ -681,7 +699,7 @@ def _fetch_hls_qualities(url, referer):
             if j < len(lines):
                 variant_uri = lines[j].strip()
                 if variant_uri:
-                    variant_url = urljoin(url, variant_uri)
+                    variant_url = urljoin(base_url, variant_uri)
                     if res_m:
                         label = f"{res_m.group(2)}p"
                     elif bw_m:
@@ -1043,8 +1061,11 @@ def _find_item(title):
     return next((i for i in _load_db() if i.get("title") == title), None)
 
 
-def _render_qualities(title, qualities):
-    """Render quality → play items. qualities = {quality_str: stream_url}."""
+def _render_qualities(title, qualities, referer=None):
+    """Render quality → play items. qualities = {quality_str: stream_url}.
+    referer, when given, is the source page's own URL (e.g. from a
+    hdrezka-home.tv entry in rezka_database.json) so playback uses the same
+    domain the stream was fetched from instead of always defaulting to rezka.ag."""
     ordered = sorted(
         qualities.items(),
         key=lambda kv: _QUALITY_ORDER.index(kv[0]) if kv[0] in _QUALITY_ORDER else 99,
@@ -1053,7 +1074,8 @@ def _render_qualities(title, qualities):
         li = xbmcgui.ListItem(label=f"Качество: {quality}")
         li.setInfo("video", {"title": f"{title} [{quality}]"})
         li.setProperty("IsPlayable", "true")
-        xbmcplugin.addDirectoryItem(HANDLE, _url(action="play", video_url=stream_url), li, False)
+        extra = {"referer": referer} if referer else {}
+        xbmcplugin.addDirectoryItem(HANDLE, _url(action="play", video_url=stream_url, **extra), li, False)
     xbmcplugin.endOfDirectory(HANDLE)
 
 
@@ -1137,7 +1159,7 @@ def show_qualities(title, translator):
     if isinstance(translators, dict):
         # Old format — use stored static stream URLs
         qualities = translators.get(translator, {})
-        _render_qualities(title, qualities)
+        _render_qualities(title, qualities, referer=item.get("url"))
     else:
         # New format — fetch live from rezka
         try:
@@ -1150,7 +1172,7 @@ def show_qualities(title, translator):
             _notify_error(str(e))
             xbmcplugin.endOfDirectory(HANDLE)
             return
-        _render_qualities(title, qualities)
+        _render_qualities(title, qualities, referer=item.get("url"))
 
 
 def show_seasons(title, translator):
@@ -1198,7 +1220,8 @@ def show_episodes(title, translator, season):
         hls_url = hls_season.get(str(ep))
         if hls_url:
             li.setProperty("IsPlayable", "true")
-            xbmcplugin.addDirectoryItem(HANDLE, _url(action="play", video_url=hls_url), li, False)
+            extra = {"referer": item["url"]} if item.get("url") else {}
+            xbmcplugin.addDirectoryItem(HANDLE, _url(action="play", video_url=hls_url, **extra), li, False)
         else:
             xbmcplugin.addDirectoryItem(
                 HANDLE,
@@ -1228,14 +1251,15 @@ def show_episode_qualities(title, translator, season, episode):
         xbmcplugin.endOfDirectory(HANDLE)
         return
 
-    _render_qualities(f"{title} С{season}Е{int(episode):02d}", qualities)
+    _render_qualities(f"{title} С{season}Е{int(episode):02d}", qualities, referer=item.get("url"))
 
 
-def play_video(video_url):
-    if any(d in video_url for d in ("cinemap.cc", "cinemar.cc", "kinogo")):
-        referer = "https://kinogo.online/"
-    else:
-        referer = "https://rezka.ag/"
+def play_video(video_url, referer=None):
+    if not referer:
+        if any(d in video_url for d in ("cinemap.cc", "cinemar.cc", "kinogo")):
+            referer = "https://kinogo.online/"
+        else:
+            referer = f"{_DEFAULT_REZKA_DOMAIN}/"
 
     if ".m3u8" in video_url:
         try:
@@ -1291,7 +1315,7 @@ def router(paramstring):
     elif action == "list_kinogo_ep_qualities":
         show_kinogo_ep_qualities(p["title"], p["translator"], p["season"], p["ep_idx"])
     elif action == "play":
-        play_video(p["video_url"])
+        play_video(p["video_url"], referer=p.get("referer"))
 
 
 if __name__ == "__main__":
