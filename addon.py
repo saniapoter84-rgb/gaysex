@@ -61,9 +61,9 @@ _GATEWAY_RETRY_CODES = (502, 503, 504)
 
 
 def _open_with_gateway_retry(req, timeout, attempts=3, delay=2):
-    """Open a request, retrying on transient gateway errors (502/503/504)
-    from rezka.ag's Anubis anti-bot proxy, which times out under load far
-    more often than the origin site itself does."""
+    """Open a request, retrying on transient failures from rezka.ag's Anubis
+    anti-bot proxy: gateway errors (502/503/504) and bare connection resets,
+    both of which it produces under load far more often than a real block."""
     for attempt in range(attempts):
         try:
             return _opener.open(req, timeout=timeout)
@@ -72,6 +72,14 @@ def _open_with_gateway_retry(req, timeout, attempts=3, delay=2):
                 raise
             xbmc.log(
                 f"RezkaLocal: {e.code} от {req.full_url}, повтор {attempt + 1}/{attempts - 1}",
+                xbmc.LOGWARNING,
+            )
+            time.sleep(delay)
+        except URLError as e:
+            if not isinstance(e.reason, ConnectionError) or attempt == attempts - 1:
+                raise
+            xbmc.log(
+                f"RezkaLocal: соединение оборвано [{req.full_url}], повтор {attempt + 1}/{attempts - 1}",
                 xbmc.LOGWARNING,
             )
             time.sleep(delay)
