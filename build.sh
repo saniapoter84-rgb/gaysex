@@ -40,8 +40,14 @@ pack() {
     fi
 }
 
+# rezka_database.json is the scraper's plain-text, git-diffable output;
+# the addon itself only reads the compiled SQLite .db at runtime, rebuilt
+# fresh on every release so it never drifts from the JSON source.
+echo "==> building rezka_database.db from rezka_database.json"
+python3 json_to_sqlite.py rezka_database.json "$STAGE/rezka_database.db"
+
 echo "==> $PLUGIN_ID $PLUGIN_VER"
-pack "$PLUGIN_ID" "$PLUGIN_ID-$PLUGIN_VER.zip" addon.py addon.xml rezka_database.json
+pack "$PLUGIN_ID" "$PLUGIN_ID-$PLUGIN_VER.zip" addon.py addon.xml "$STAGE/rezka_database.db"
 rm -f "$PLUGIN_ID"/*.zip
 cp "$STAGE/$PLUGIN_ID-$PLUGIN_VER.zip" "$PLUGIN_ID/"
 

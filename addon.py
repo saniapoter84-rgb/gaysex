@@ -5,6 +5,7 @@ import http.cookiejar
 import json
 import os
 import re
+import sqlite3
 import sys
 import time
 from urllib.error import HTTPError, URLError
@@ -18,7 +19,7 @@ import xbmcplugin
 
 addon = xbmcaddon.Addon()
 ADDON_PATH = addon.getAddonInfo("path")
-JSON_PATH = os.path.join(ADDON_PATH, "rezka_database.json")
+DB_PATH = os.path.join(ADDON_PATH, "rezka_database.db")
 CACHE_PATH = os.path.join(ADDON_PATH, "rezka_url_cache.json")
 
 BASE_URL = sys.argv[0]
@@ -1045,20 +1046,81 @@ def _probe_url(url):
         return False
 
 
-def _load_db():
-    if not os.path.exists(JSON_PATH):
-        xbmc.log(f"RezkaLocal: база не найдена: {JSON_PATH}", xbmc.LOGERROR)
-        return []
-    try:
-        with open(JSON_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        xbmc.log(f"RezkaLocal: ошибка загрузки JSON: {e}", xbmc.LOGERROR)
-        return []
+def _db_connect():
+    """Open the packaged SQLite database read-only. Using the URI mode=ro
+    form (rather than a plain path) stops SQLite from trying to create a
+    -journal/-wal file next to it, which the addon directory may not be
+    writable for anyway."""
+    return sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+
+
+def _row_to_item(conn, row):
+    """Reassemble one `items` row (+ its translators/seasons/hls_episodes)
+    into the same dict shape the old JSON entries had — translators as
+    either a plain list of names or a {name: {quality: url}} dict, seasons
+    and hls_episodes as nested dicts keyed by string numbers — so every
+    other function in this file keeps working unchanged."""
+    item_id, title, type_, url, source = row
+    item = {"title": title, "type": type_, "url": url}
+    if source:
+        item["source"] = source
+
+    t_rows = conn.execute(
+        "SELECT id, name FROM translators WHERE item_id = ? ORDER BY position", (item_id,)
+    ).fetchall()
+
+    url_rows = conn.execute(
+        """SELECT translator_id, quality, url FROM translator_urls
+           WHERE translator_id IN (SELECT id FROM translators WHERE item_id = ?)""",
+        (item_id,),
+    ).fetchall()
+    urls_by_translator = {}
+    for t_id, quality, u in url_rows:
+        urls_by_translator.setdefault(t_id, {})[quality] = u
+
+    if urls_by_translator:
+        item["translators"] = {name: urls_by_translator.get(t_id, {}) for t_id, name in t_rows}
+    else:
+        item["translators"] = [name for _, name in t_rows]
+
+    season_rows = conn.execute(
+        "SELECT season, episode_count FROM seasons WHERE item_id = ?", (item_id,)
+    ).fetchall()
+    if season_rows:
+        item["seasons"] = {str(s): c for s, c in season_rows}
+
+    hls_rows = conn.execute(
+        "SELECT season, episode, url FROM hls_episodes WHERE item_id = ?", (item_id,)
+    ).fetchall()
+    if hls_rows:
+        hls = {}
+        for s, e, u in hls_rows:
+            hls.setdefault(str(s), {})[str(e)] = u
+        item["hls_episodes"] = hls
+
+    return item
 
 
 def _find_item(title):
-    return next((i for i in _load_db() if i.get("title") == title), None)
+    if not os.path.exists(DB_PATH):
+        xbmc.log(f"RezkaLocal: база не найдена: {DB_PATH}", xbmc.LOGERROR)
+        return None
+    try:
+        conn = _db_connect()
+        try:
+            # Duplicate titles exist in the scraped data (multi-worker
+            # re-scrapes); ORDER BY id picks the same "first match" the
+            # old linear json scan used to.
+            row = conn.execute(
+                "SELECT id, title, type, url, source FROM items WHERE title = ? ORDER BY id LIMIT 1",
+                (title,),
+            ).fetchone()
+            return _row_to_item(conn, row) if row else None
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        xbmc.log(f"RezkaLocal: ошибка SQLite: {e}", xbmc.LOGERROR)
+        return None
 
 
 def _render_qualities(title, qualities, referer=None):
@@ -1095,14 +1157,33 @@ def show_items(category, query=""):
     search_li.setInfo("video", {"title": "Поиск"})
     xbmcplugin.addDirectoryItem(HANDLE, _url(action="search", category=category), search_li, True)
 
+    if not os.path.exists(DB_PATH):
+        xbmc.log(f"RezkaLocal: база не найдена: {DB_PATH}", xbmc.LOGERROR)
+        xbmcplugin.endOfDirectory(HANDLE)
+        return
+
     needle = query.lower().strip()
-    for item in _load_db():
-        if item.get("type") != category:
-            continue
-        title = item.get("title", "Без названия")
+    try:
+        conn = _db_connect()
+        try:
+            # Scoped by the indexed `type` column instead of loading and
+            # parsing the whole database — the substring match itself stays
+            # in Python (title.lower()) since SQLite's own LOWER()/NOCASE
+            # only case-folds ASCII, not Cyrillic.
+            rows = conn.execute(
+                """SELECT title, EXISTS(SELECT 1 FROM seasons WHERE seasons.item_id = items.id)
+                   FROM items WHERE type = ? ORDER BY title""",
+                (category,),
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        xbmc.log(f"RezkaLocal: ошибка SQLite: {e}", xbmc.LOGERROR)
+        rows = []
+
+    for title, is_series in rows:
         if needle and needle not in title.lower():
             continue
-        is_series = "seasons" in item
         li = xbmcgui.ListItem(label=title)
         li.setInfo("video", {"title": title, "mediatype": "tvshow" if is_series else "movie"})
         xbmcplugin.addDirectoryItem(HANDLE, _url(action="list_translators", title=title), li, True)
