@@ -187,6 +187,23 @@ def _parse_content_id(html):
     return None
 
 
+def _parse_default_translator_id(html):
+    """Extract the translator id embedded directly in the player init call —
+    sof.tv.initCDNMoviesEvents(content_id, translator_id, ...). Present even
+    when the page renders no selectable <li data-translator_id> list because
+    there's only one track (usually the original-language one), which is
+    the case _parse_translator_ids can't see."""
+    for pat in (
+        r"initCDNMoviesEvents\s*\(\s*\d+\s*,\s*(\d+)",
+        r"initCDNSeriesEvents\s*\(\s*\d+\s*,\s*(\d+)",
+        r'sof\.tv\.\w+Events\s*\(\s*\d+\s*,\s*(\d+)',
+    ):
+        m = re.search(pat, html)
+        if m:
+            return m.group(1)
+    return None
+
+
 def _parse_translator_ids(html):
     """Return {display_name: (translator_id, is_director, is_cam, is_ads)} from the page."""
     result = {}
@@ -361,17 +378,34 @@ def _fetch_qualities(item, translator_name, season=None, episode=None):
         raise RuntimeError("Не удалось определить ID контента на странице")
 
     id_map = _parse_translator_ids(html)
-    entry = id_map.get(translator_name)
+
+    if not translator_name:
+        # No translators were recorded for this entry: the page rendered no
+        # selectable list, just one (usually original-language) track whose
+        # id sits in the player init call rather than in the <li
+        # data-translator_id> markup _parse_translator_ids reads.
+        entry = next(iter(id_map.values())) if len(id_map) == 1 else None
+        if not entry:
+            default_tid = _parse_default_translator_id(html)
+            if default_tid:
+                entry = (default_tid, "0", "0", "0")
+    else:
+        entry = id_map.get(translator_name)
+        if not entry:
+            low = translator_name.lower()
+            for name, e in id_map.items():
+                if low in name.lower() or name.lower() in low:
+                    entry = e
+                    break
 
     if not entry:
-        low = translator_name.lower()
-        for name, e in id_map.items():
-            if low in name.lower() or name.lower() in low:
-                entry = e
-                break
-
-    if not entry:
-        if id_map:
+        if not translator_name:
+            xbmcgui.Dialog().ok(
+                "RezkaLocal — ошибка",
+                f"Не удалось определить дорожку по умолчанию.\n\nURL: {page_url}\n\nHTML начало:\n{html[:300]}",
+            )
+            raise RuntimeError("Не удалось определить дорожку по умолчанию")
+        elif id_map:
             found = ", ".join(id_map.keys())
             xbmcgui.Dialog().ok(
                 "RezkaLocal — озвучка не найдена",
@@ -1214,6 +1248,17 @@ def show_translators(title):
     is_series = "seasons" in item
     next_action = "list_seasons" if is_series else "list_qualities"
 
+    if not names:
+        # No translators recorded — rezka renders no selectable list when
+        # there's just one (usually original-language) track, so skip
+        # straight to seasons/qualities instead of showing an empty menu.
+        # _fetch_qualities resolves the actual track id from the page.
+        if is_series:
+            show_seasons(title, "")
+        else:
+            show_qualities(title, "")
+        return
+
     for name in names:
         li = xbmcgui.ListItem(label=f"Озвучка: {name}")
         xbmcplugin.addDirectoryItem(HANDLE, _url(action=next_action, title=title, translator=name), li, True)
@@ -1374,7 +1419,10 @@ def show_kinogo_ep_qualities(title, translator, season, ep_idx):
 # ── Router ────────────────────────────────────────────────────────────────────
 
 def router(paramstring):
-    p = dict(parse_qsl(paramstring))
+    # keep_blank_values: translator="" is a valid value (means "no
+    # translator recorded, use the page's default/only track") and must
+    # not be dropped from the parsed dict.
+    p = dict(parse_qsl(paramstring, keep_blank_values=True))
     action = p.get("action")
 
     if not action:
