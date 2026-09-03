@@ -142,7 +142,41 @@ def _solve_anubis(html, url):
     return _read_response(_open_with_gateway_retry(req, timeout=20))
 
 
+_seeded_cookie_domains = set()
+
+# Cookies a real browser carries on every rezka request. Not required to
+# render the page, but the CDN stream API (get_cdn_series) treats a client
+# missing them as a bare anonymous request and can reject it outright
+# (observed as a generic "Время сессии истекло" error) rather than serving
+# the stream — passing translator_id/content_id alone isn't enough.
+_BROWSER_COOKIES = (
+    ("allowed_comments", "1"),
+    ("_ym_isad", "1"),
+    ("_ym_visorc", "b"),
+    ("dle_newpm", "0"),
+)
+
+
+def _seed_browser_cookies(domain):
+    if domain in _seeded_cookie_domains:
+        return
+    _seeded_cookie_domains.add(domain)
+    host = urlsplit(domain).hostname
+    if not host:
+        return
+    for name, value in _BROWSER_COOKIES:
+        _cookie_jar.set_cookie(http.cookiejar.Cookie(
+            version=0, name=name, value=value,
+            port=None, port_specified=False,
+            domain=host, domain_specified=True, domain_initial_dot=False,
+            path="/", path_specified=True,
+            secure=False, expires=None, discard=True,
+            comment=None, comment_url=None, rest={},
+        ))
+
+
 def _fetch(url):
+    _seed_browser_cookies(_domain_of(url))
     req = Request(url, headers=_headers_for(url))
     html = _read_response(_open_with_gateway_retry(req, timeout=15))
     if "anubis_challenge" in html:
@@ -312,8 +346,12 @@ def _call_cdn_api(content_id, translator_id, action, season=None, episode=None, 
         data["episode"] = str(episode)
 
     domain = _domain_of(page_url) if page_url else _DEFAULT_REZKA_DOMAIN
+    _seed_browser_cookies(domain)
+    # Cache-busting ?t=<ns>, matching the official app/other clients — without
+    # it a caching layer in front of the endpoint can serve a stale response
+    # (e.g. another client's error) instead of hitting the backend fresh.
     req = Request(
-        f"{domain}/ajax/get_cdn_series/",
+        f"{domain}/ajax/get_cdn_series/?t={time.time_ns()}",
         data=urlencode(data).encode(),
         headers={
             "User-Agent": _UA,
