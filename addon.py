@@ -186,92 +186,50 @@ def _fetch(url):
     return html
 
 
-def _content_id_from_url(page_url):
-    """Fast extraction of content ID from rezka.ag URL without fetching the page.
-    URL pattern: /category/genre/12345-slug-year.html
-    """
-    m = re.search(r'/(\d+)-[^/]+\.html', page_url)
-    return m.group(1) if m else None
+def _parse_translator_links(html):
+    """Return {display_name: (translator_id, href)} for the REAL translator
+    links on a rezka page.
 
-
-def _parse_content_id(html):
-    for pat in (
-        # JS player init calls
-        r"initCDNMoviesEvents\s*\(\s*(\d+)",
-        r"initCDNSeriesEvents\s*\(\s*(\d+)",
-        r'sof\.tv\.\w+Events\s*\(\s*(\d+)',
-        # Canonical / og:url — most stable: ID is in the page URL itself
-        r'<link[^>]+rel=["\']canonical["\'][^>]+href=["\'][^"\']*?/(\d+)-',
-        r'property=["\']og:url["\'][^>]+content=["\'][^"\']*?/(\d+)-',
-        r'content=["\'][^"\']*?/(\d+)-[^/]+\.html["\'][^>]*property=["\']og:url["\']',
-        # HTML data attributes
-        r"data-id=[\"'](\d+)[\"']",
-        r'data-content-id=["\'](\d+)["\']',
-        # JS / JSON properties
-        r'"id"\s*:\s*(\d{4,})',
-        r'"content_id"\s*:\s*(\d+)',
-        r'id_content\s*=\s*(\d+)',
-        r"banhammer_id\s*=\s*[\"']?(\d+)",
-        # Numeric ID embedded anywhere in a script src / URL param
-        r'player\.php[?][^"\']*id=(\d+)',
-    ):
-        m = re.search(pat, html)
-        if m:
-            return m.group(1)
-    return None
-
-
-def _parse_default_translator_id(html):
-    """Extract the translator id embedded directly in the player init call —
-    sof.tv.initCDNMoviesEvents(content_id, translator_id, ...). Present even
-    when the page renders no selectable <li data-translator_id> list because
-    there's only one track (usually the original-language one), which is
-    the case _parse_translator_ids can't see."""
-    for pat in (
-        r"initCDNMoviesEvents\s*\(\s*\d+\s*,\s*(\d+)",
-        r"initCDNSeriesEvents\s*\(\s*\d+\s*,\s*(\d+)",
-        r'sof\.tv\.\w+Events\s*\(\s*\d+\s*,\s*(\d+)',
-    ):
-        m = re.search(pat, html)
-        if m:
-            return m.group(1)
-    return None
-
-
-def _parse_translator_ids(html):
-    """Return {display_name: (translator_id, is_director, is_cam, is_ads)} from the page."""
+    rezka also renders a decoy list right before the real one: same names
+    and data-translator_id values, but styled 'b-translator__items' —
+    plural, note the trailing s — hidden via a `{display:none}` rule, and
+    pointing at bogus obfuscated-slug URLs. It exists to catch scrapers
+    that follow every link with a data-translator_id rather than reading
+    the page like a browser does. Matching the class name exactly
+    ('b-translator__item', optionally '... active') skips those and keeps
+    only the real, visible entries."""
     result = {}
-
-    def add(name, tid, director="0", cam="0", ads="0"):
+    for m in re.finditer(
+        r'<a[^>]+title="([^"]+)"[^>]+class="b-translator__item(?: active)?"'
+        r'[^>]+data-translator_id="(\d+)"[^>]+href="([^"]+)"',
+        html,
+    ):
+        name, tid, href = m.groups()
         name = name.strip().replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
         if name and name not in result:
-            result[name] = (tid, director, cam, ads)
-
-    def _flags(tag):
-        d = re.search(r'data-director=["\'](\d+)["\']', tag)
-        c = re.search(r'data-camrip=["\'](\d+)["\']', tag)
-        a = re.search(r'data-ads=["\'](\d+)["\']', tag)
-        return (d.group(1) if d else "0"), (c.group(1) if c else "0"), (a.group(1) if a else "0")
-
-    # Series/anime use <li>, films use <a> — capture whole tag body then pick attrs
-    for tag_re in (r'<li\b([^>]*)>', r'<a\b([^>]*)>'):
-        for m in re.finditer(tag_re, html):
-            tag = m.group(1)
-            tid_m = re.search(r'data-translator_id=["\'](\d+)["\']', tag)
-            if not tid_m:
-                continue
-            title_m = re.search(r'\btitle="([^"]+)"', tag)
-            if not title_m:
-                continue
-            add(title_m.group(1), tid_m.group(1), *_flags(tag))
-
-    # Fallback: data-translator-id (dash — older markup)
-    if not result:
-        for m in re.finditer(r'id="translator-\d+-(\d+)"[^>]*>\s*<b>([^<]+)</b>', html):
-            add(m.group(2), m.group(1))
-        for m in re.finditer(r'data-translator-id="(\d+)"[^>]*>\s*(?:<[a-z][^>]*>)?\s*([^<]{2,80})', html):
-            add(m.group(2), m.group(1))
+            result[name] = (tid, href)
     return result
+
+
+def _extract_cdn_config(html):
+    """Stream URLs are baked directly into the page's own player-init call —
+    sof.tv.initCDNMoviesEvents(...)/initCDNSeriesEvents(..., config) — as
+    its trailing JSON object argument. rezka apparently stopped resolving
+    streams via the /ajax/get_cdn_series/ endpoint for normal playback at
+    some point (it now returns a generic "session expired" error for any
+    request there); reading the page's own embedded config instead needs
+    no extra network round-trip and no session state at all."""
+    m = re.search(r'sof\.tv\.initCDN(?:Movies|Series)Events\s*\(', html)
+    if not m:
+        return None
+    idx = html.find('{', m.end())
+    if idx == -1:
+        return None
+    try:
+        obj, _ = json.JSONDecoder().raw_decode(html, idx)
+        return obj
+    except json.JSONDecodeError:
+        return None
 
 
 def _trash_decode(s):
@@ -328,85 +286,12 @@ def _parse_cdn_url(raw):
     return result
 
 
-def _call_cdn_api(content_id, translator_id, action, season=None, episode=None, page_url=None,
-                  is_director="0", is_cam="0", is_ads="0"):
-    """POST to /ajax/get_cdn_series/ and return {quality: url}."""
-    data = {
-        "id": content_id,
-        "translator_id": translator_id,
-        "is_cam": is_cam,
-        "is_ads": is_ads,
-        "action": action,
-    }
-    if is_director != "0":
-        data["is_director"] = is_director
-    if season is not None:
-        data["season"] = str(season)
-    if episode is not None:
-        data["episode"] = str(episode)
-
-    domain = _domain_of(page_url) if page_url else _DEFAULT_REZKA_DOMAIN
-    _seed_browser_cookies(domain)
-    # Cache-busting ?t=<ns>, matching the official app/other clients — without
-    # it a caching layer in front of the endpoint can serve a stale response
-    # (e.g. another client's error) instead of hitting the backend fresh.
-    req = Request(
-        f"{domain}/ajax/get_cdn_series/?t={time.time_ns()}",
-        data=urlencode(data).encode(),
-        headers={
-            "User-Agent": _UA,
-            "X-Requested-With": "XMLHttpRequest",
-            # Site root, not the content page — matches every third-party
-            # client implementation checked (go-hdrezka et al.).
-            "Referer": f"{domain}/",
-            "Origin": domain,
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Accept-Encoding": "gzip, deflate",
-        },
-    )
-    raw_body = _read_response(_opener.open(req, timeout=15))
-    try:
-        body = json.loads(raw_body)
-    except json.JSONDecodeError:
-        xbmc.log(
-            f"RezkaLocal: get_cdn_series вернул не JSON. Запрос: {data}, "
-            f"Referer: {domain}/. Ответ (первые 500 символов): {raw_body[:500]!r}",
-            xbmc.LOGERROR,
-        )
-        raise RuntimeError("CDN API вернул не JSON (возможно, антибот-страница)")
-
-    if not body.get("success"):
-        # Log the full request/response — plus which cookies we actually
-        # hold for this domain at the moment of the call — so a real
-        # failure can be diagnosed from the next occurrence's kodi.log.
-        # A live browser capture showed dle_user_taken/dle_user_token
-        # cookies (DLE-engine anti-bot markers) that this addon has never
-        # set or observed receiving via Set-Cookie; this tells us whether
-        # they're actually missing or we already have them and the
-        # problem is elsewhere.
-        host = urlsplit(domain).hostname or ""
-        held_cookies = sorted(
-            c.name for c in _cookie_jar if c.domain in (host, f".{host}")
-        )
-        xbmc.log(
-            f"RezkaLocal: get_cdn_series отказал. Запрос: {data}, "
-            f"Referer: {domain}/, куки для {host}: {held_cookies}, ответ: {raw_body!r}",
-            xbmc.LOGERROR,
-        )
-        raise RuntimeError(body.get("message", "CDN API вернул ошибку"))
-
-    qualities = _parse_cdn_url(body.get("url"))
-    if not qualities:
-        raise RuntimeError(
-            f"CDN API не вернул ссылки. url={body.get('url')!r}, "
-            f"premium={body.get('premium_content')}"
-        )
-    return qualities
-
-
 def _fetch_qualities(item, translator_name, season=None, episode=None):
     """
-    Fetch stream URLs for a new-format entry.
+    Fetch stream URLs for a new-format entry by reading the target page's
+    own embedded player config (see _extract_cdn_config) — rezka bakes the
+    resolved stream URLs directly into each translator/episode page now,
+    rather than resolving them via an AJAX call.
     Checks disk cache first; only hits rezka if cache is missing or stale.
     Returns {quality: url} or raises RuntimeError / URLError.
     """
@@ -425,71 +310,51 @@ def _fetch_qualities(item, translator_name, season=None, episode=None):
         del cache[key]
         _save_cache(cache)
 
-    # Extract content_id from the URL itself — no network needed
-    content_id = _content_id_from_url(page_url)
+    target_url = page_url
 
-    # Fetch the page (needed for translator IDs; also fallback for content_id)
-    html = _fetch(page_url)
-
-    if not content_id:
-        content_id = _parse_content_id(html)
-    if not content_id:
-        xbmcgui.Dialog().ok(
-            "RezkaLocal — ID не найден",
-            f"URL: {page_url}\n\nHTML начало:\n{html[:400]}",
-        )
-        raise RuntimeError("Не удалось определить ID контента на странице")
-
-    id_map = _parse_translator_ids(html)
-
-    if not translator_name:
-        # No translators were recorded for this entry: the page rendered no
-        # selectable list, just one (usually original-language) track whose
-        # id sits in the player init call rather than in the <li
-        # data-translator_id> markup _parse_translator_ids reads.
-        entry = next(iter(id_map.values())) if len(id_map) == 1 else None
-        if not entry:
-            default_tid = _parse_default_translator_id(html)
-            if default_tid:
-                entry = (default_tid, "0", "0", "0")
-    else:
-        entry = id_map.get(translator_name)
+    if translator_name:
+        html = _fetch(page_url)
+        links = _parse_translator_links(html)
+        entry = links.get(translator_name)
         if not entry:
             low = translator_name.lower()
-            for name, e in id_map.items():
+            for name, e in links.items():
                 if low in name.lower() or name.lower() in low:
                     entry = e
                     break
+        if not entry:
+            if links:
+                found = ", ".join(links.keys())
+                xbmcgui.Dialog().ok(
+                    "RezkaLocal — озвучка не найдена",
+                    f"Искали: «{translator_name}»\n\nНайдено на странице:\n{found}",
+                )
+                raise RuntimeError(f"Озвучка «{translator_name}» не найдена. На странице: {found}")
+            else:
+                xbmcgui.Dialog().ok(
+                    "RezkaLocal — ошибка",
+                    f"Озвучки не найдены вообще.\n\nURL: {page_url}\n\nHTML начало:\n{html[:300]}",
+                )
+                raise RuntimeError(f"Озвучка «{translator_name}» не найдена на странице")
+        _tid, target_url = entry
 
-    if not entry:
-        if not translator_name:
-            xbmcgui.Dialog().ok(
-                "RezkaLocal — ошибка",
-                f"Не удалось определить дорожку по умолчанию.\n\nURL: {page_url}\n\nHTML начало:\n{html[:300]}",
-            )
-            raise RuntimeError("Не удалось определить дорожку по умолчанию")
-        elif id_map:
-            found = ", ".join(id_map.keys())
-            xbmcgui.Dialog().ok(
-                "RezkaLocal — озвучка не найдена",
-                f"Искали: «{translator_name}»\n\nНайдено на странице:\n{found}",
-            )
-            raise RuntimeError(f"Озвучка «{translator_name}» не найдена. На странице: {found}")
-        else:
-            xbmcgui.Dialog().ok(
-                "RezkaLocal — ошибка",
-                f"Озвучки не найдены вообще.\n\nURL: {page_url}\n\nHTML начало:\n{html[:300]}",
-            )
-            raise RuntimeError(f"Озвучка «{translator_name}» не найдена на странице")
+    if season is not None:
+        target_url = re.sub(r'\.html$', '', target_url) + f"/{season}-season/{episode}-episode.html"
 
-    if isinstance(entry, tuple):
-        tid, is_director, is_cam, is_ads = entry
-    else:
-        tid, is_director, is_cam, is_ads = entry, "0", "0", "0"
+    html = _fetch(target_url)
+    config = _extract_cdn_config(html)
 
-    action = "get_stream" if season is not None else "get_movie"
-    qualities = _call_cdn_api(content_id, tid, action, season, episode, page_url=page_url,
-                              is_director=is_director, is_cam=is_cam, is_ads=is_ads)
+    if not config or not config.get("streams"):
+        xbmc.log(f"RezkaLocal: не удалось извлечь конфиг плеера. URL: {target_url}", xbmc.LOGERROR)
+        raise RuntimeError(
+            "Не удалось получить ссылки на поток со страницы "
+            "(возможно, этот перевод доступен только для Premium)"
+        )
+
+    qualities = _parse_cdn_url(config["streams"])
+    if not qualities:
+        raise RuntimeError(f"Не удалось разобрать ссылки на поток. streams={config['streams'][:200]!r}")
+
     cache = _load_cache()
     cache[key] = qualities
     _save_cache(cache)
