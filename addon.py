@@ -359,6 +359,7 @@ def _call_cdn_api(content_id, translator_id, action, season=None, episode=None, 
             # Site root, not the content page — matches every third-party
             # client implementation checked (go-hdrezka et al.).
             "Referer": f"{domain}/",
+            "Origin": domain,
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept-Encoding": "gzip, deflate",
         },
