@@ -356,7 +356,9 @@ def _call_cdn_api(content_id, translator_id, action, season=None, episode=None, 
         headers={
             "User-Agent": _UA,
             "X-Requested-With": "XMLHttpRequest",
-            "Referer": page_url or f"{domain}/",
+            # Site root, not the content page — matches every third-party
+            # client implementation checked (go-hdrezka et al.).
+            "Referer": f"{domain}/",
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept-Encoding": "gzip, deflate",
         },
@@ -365,9 +367,22 @@ def _call_cdn_api(content_id, translator_id, action, season=None, episode=None, 
     try:
         body = json.loads(raw_body)
     except json.JSONDecodeError:
+        xbmc.log(
+            f"RezkaLocal: get_cdn_series вернул не JSON. Запрос: {data}, "
+            f"Referer: {domain}/. Ответ (первые 500 символов): {raw_body[:500]!r}",
+            xbmc.LOGERROR,
+        )
         raise RuntimeError("CDN API вернул не JSON (возможно, антибот-страница)")
 
     if not body.get("success"):
+        # Log the full request/response so a real failure (as opposed to a
+        # guess from third-party client source) can actually be diagnosed
+        # from the next occurrence's kodi.log instead of just the toast text.
+        xbmc.log(
+            f"RezkaLocal: get_cdn_series отказал. Запрос: {data}, "
+            f"Referer: {domain}/, ответ: {raw_body!r}",
+            xbmc.LOGERROR,
+        )
         raise RuntimeError(body.get("message", "CDN API вернул ошибку"))
 
     qualities = _parse_cdn_url(body.get("url"))
