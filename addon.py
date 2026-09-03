@@ -376,12 +376,21 @@ def _call_cdn_api(content_id, translator_id, action, season=None, episode=None, 
         raise RuntimeError("CDN API вернул не JSON (возможно, антибот-страница)")
 
     if not body.get("success"):
-        # Log the full request/response so a real failure (as opposed to a
-        # guess from third-party client source) can actually be diagnosed
-        # from the next occurrence's kodi.log instead of just the toast text.
+        # Log the full request/response — plus which cookies we actually
+        # hold for this domain at the moment of the call — so a real
+        # failure can be diagnosed from the next occurrence's kodi.log.
+        # A live browser capture showed dle_user_taken/dle_user_token
+        # cookies (DLE-engine anti-bot markers) that this addon has never
+        # set or observed receiving via Set-Cookie; this tells us whether
+        # they're actually missing or we already have them and the
+        # problem is elsewhere.
+        host = urlsplit(domain).hostname or ""
+        held_cookies = sorted(
+            c.name for c in _cookie_jar if c.domain in (host, f".{host}")
+        )
         xbmc.log(
             f"RezkaLocal: get_cdn_series отказал. Запрос: {data}, "
-            f"Referer: {domain}/, ответ: {raw_body!r}",
+            f"Referer: {domain}/, куки для {host}: {held_cookies}, ответ: {raw_body!r}",
             xbmc.LOGERROR,
         )
         raise RuntimeError(body.get("message", "CDN API вернул ошибку"))
