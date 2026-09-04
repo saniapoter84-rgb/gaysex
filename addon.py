@@ -232,6 +232,29 @@ def _extract_cdn_config(html):
         return None
 
 
+def _parse_season_tabs(html):
+    """Season numbers from the season tab bar (#simple-seasons-tabs)."""
+    return sorted({
+        int(m.group(1)) for m in re.finditer(
+            r'<a[^>]+class="b-simple_season__item(?: active)?"[^>]+data-tab_id="(\d+)"', html
+        )
+    })
+
+
+def _parse_episode_count(html, season):
+    """Highest episode number for `season` in the currently loaded episode
+    tab list (#simple-episodes-tabs) — rezka only renders one season's
+    episodes per page load, whichever season the URL/tab selects."""
+    count = 0
+    for m in re.finditer(r'data-season_id="(\d+)"[^>]*data-episode_id="(\d+)"', html):
+        if int(m.group(1)) == season:
+            count = max(count, int(m.group(2)))
+    for m in re.finditer(r'data-episode_id="(\d+)"[^>]*data-season_id="(\d+)"', html):
+        if int(m.group(2)) == season:
+            count = max(count, int(m.group(1)))
+    return count
+
+
 def _trash_decode(s):
     """Decode rezka 'trash' codec: reverse char substitutions, then base64."""
     s = s.replace("#", "=").replace("@", "/").replace("$", "+")
@@ -284,6 +307,26 @@ def _parse_cdn_url(raw):
             result["auto"] = url
 
     return result
+
+
+def _translator_page_url(item, translator_name):
+    """Base page URL for a given translator name (item['url'] itself if no
+    translator name was recorded — the original-track fallback — or if the
+    lookup fails for any reason)."""
+    if not translator_name:
+        return item["url"]
+    try:
+        links = _parse_translator_links(_fetch(item["url"]))
+    except (URLError, HTTPError):
+        return item["url"]
+    entry = links.get(translator_name)
+    if not entry:
+        low = translator_name.lower()
+        for name, e in links.items():
+            if low in name.lower() or name.lower() in low:
+                entry = e
+                break
+    return entry[1] if entry else item["url"]
 
 
 def _fetch_qualities(item, translator_name, season=None, episode=None):
@@ -1174,6 +1217,18 @@ def show_translators(title):
     # New format: list of names. Old format: dict {name: {quality: url}}.
     names = translators if isinstance(translators, list) else list(translators.keys())
     is_series = "seasons" in item
+
+    if not is_series:
+        # Some scraped batches (the whole current "аниме" category) never
+        # recorded episode counts, so a title can be a real multi-episode
+        # series with no "seasons" key at all — treating that as a movie
+        # would resolve only whatever episode the base URL defaults to.
+        # Check the live page instead of trusting the (incomplete) data.
+        try:
+            is_series = 'id="simple-episodes-tabs"' in _fetch(item["url"])
+        except (URLError, HTTPError):
+            pass
+
     next_action = "list_seasons" if is_series else "list_qualities"
 
     if not names:
@@ -1240,12 +1295,21 @@ def show_seasons(title, translator):
         _show_kinogo_seasons(item, translator)
         return
 
-    if "seasons" not in item:
-        xbmcgui.Dialog().ok("RezkaLocal", f"У записи «{title}» нет поля seasons.\nПроверь формат JSON.")
-        xbmcplugin.endOfDirectory(HANDLE)
-        return
+    if "seasons" in item:
+        seasons = sorted(item["seasons"].keys(), key=int)
+    else:
+        # Not recorded in the database (the whole "аниме" category, as
+        # scraped) — read season numbers from the live page's season tab
+        # bar instead of assuming there's only one.
+        try:
+            html = _fetch(_translator_page_url(item, translator))
+        except (URLError, HTTPError) as e:
+            _notify_error(f"Сетевая ошибка: {e}")
+            xbmcplugin.endOfDirectory(HANDLE)
+            return
+        seasons = [str(s) for s in _parse_season_tabs(html)] or ["1"]
 
-    for s in sorted(item["seasons"].keys(), key=int):
+    for s in seasons:
         li = xbmcgui.ListItem(label=f"Сезон {s}")
         li.setInfo("video", {"title": f"Сезон {s}", "season": int(s)})
         xbmcplugin.addDirectoryItem(
@@ -1266,7 +1330,20 @@ def show_episodes(title, translator, season):
 
     hls_season = item.get("hls_episodes", {}).get(str(season), {})
 
-    ep_count = int(item.get("seasons", {}).get(str(season), 0))
+    if "seasons" in item:
+        ep_count = int(item.get("seasons", {}).get(str(season), 0))
+    else:
+        # Not recorded in the database — read the episode count off the
+        # live season page's episode tab list instead.
+        try:
+            base = re.sub(r'\.html$', '', _translator_page_url(item, translator))
+            html = _fetch(f"{base}/{season}-season.html")
+        except (URLError, HTTPError) as e:
+            _notify_error(f"Сетевая ошибка: {e}")
+            xbmcplugin.endOfDirectory(HANDLE)
+            return
+        ep_count = _parse_episode_count(html, int(season))
+
     for ep in range(1, ep_count + 1):
         label = f"Серия {ep}"
         li = xbmcgui.ListItem(label=label)
