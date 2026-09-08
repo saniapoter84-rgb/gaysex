@@ -1295,19 +1295,18 @@ def show_seasons(title, translator):
         _show_kinogo_seasons(item, translator)
         return
 
-    if "seasons" in item:
-        seasons = sorted(item["seasons"].keys(), key=int)
-    else:
-        # Not recorded in the database (the whole "аниме" category, as
-        # scraped) — read season numbers from the live page's season tab
-        # bar instead of assuming there's only one.
-        try:
-            html = _fetch(_translator_page_url(item, translator))
-        except (URLError, HTTPError) as e:
-            _notify_error(f"Сетевая ошибка: {e}")
-            xbmcplugin.endOfDirectory(HANDLE)
-            return
-        seasons = [str(s) for s in _parse_season_tabs(html)] or ["1"]
+    # Season numbers scraped into the database are unreliable — missing
+    # entirely for some titles (all of "аниме"), incomplete for others
+    # (e.g. only season 2 recorded for a show that has a season 1 too).
+    # Always read the live page's season tab bar instead; fall back to
+    # whatever's stored only if the site can't be reached at all.
+    try:
+        html = _fetch(_translator_page_url(item, translator))
+        seasons = [str(s) for s in _parse_season_tabs(html)]
+    except (URLError, HTTPError):
+        seasons = []
+    if not seasons:
+        seasons = sorted(item.get("seasons", {}).keys(), key=int) or ["1"]
 
     for s in seasons:
         li = xbmcgui.ListItem(label=f"Сезон {s}")
@@ -1330,19 +1329,17 @@ def show_episodes(title, translator, season):
 
     hls_season = item.get("hls_episodes", {}).get(str(season), {})
 
-    if "seasons" in item:
-        ep_count = int(item.get("seasons", {}).get(str(season), 0))
-    else:
-        # Not recorded in the database — read the episode count off the
-        # live season page's episode tab list instead.
-        try:
-            base = re.sub(r'\.html$', '', _translator_page_url(item, translator))
-            html = _fetch(f"{base}/{season}-season.html")
-        except (URLError, HTTPError) as e:
-            _notify_error(f"Сетевая ошибка: {e}")
-            xbmcplugin.endOfDirectory(HANDLE)
-            return
+    # Same story as show_seasons: stored episode counts are unreliable, so
+    # read the live season page's episode tab list instead, falling back
+    # to the stored count only if the site can't be reached.
+    try:
+        base = re.sub(r'\.html$', '', _translator_page_url(item, translator))
+        html = _fetch(f"{base}/{season}-season.html")
         ep_count = _parse_episode_count(html, int(season))
+    except (URLError, HTTPError):
+        ep_count = 0
+    if not ep_count:
+        ep_count = int(item.get("seasons", {}).get(str(season), 0))
 
     for ep in range(1, ep_count + 1):
         label = f"Серия {ep}"
