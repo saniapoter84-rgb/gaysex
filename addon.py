@@ -368,12 +368,31 @@ def _fetch_qualities(item, translator_name, season=None, episode=None):
         if not entry:
             if links:
                 found = ", ".join(links.keys())
+                xbmc.log(
+                    f"RezkaLocal: озвучка «{translator_name}» не найдена. URL: {page_url}, "
+                    f"найдено на странице: {found}",
+                    xbmc.LOGERROR,
+                )
                 xbmcgui.Dialog().ok(
                     "RezkaLocal — озвучка не найдена",
                     f"Искали: «{translator_name}»\n\nНайдено на странице:\n{found}",
                 )
                 raise RuntimeError(f"Озвучка «{translator_name}» не найдена. На странице: {found}")
             else:
+                # No real translator links parsed at all — either the page
+                # is still an unsolved Anubis challenge (the fetch silently
+                # kept the challenge HTML instead of the real page) or the
+                # site changed the translator-list markup again. Log enough
+                # of the raw HTML to tell those apart from the next
+                # kodi.log, instead of relying on the on-screen dialog
+                # (easy to dismiss without reading, and never lands in the
+                # log file).
+                xbmc.log(
+                    f"RezkaLocal: переводы не найдены вообще. URL: {page_url}, "
+                    f"anubis_challenge в html: {'anubis_challenge' in html}, "
+                    f"длина html: {len(html)}, начало: {html[:800]!r}",
+                    xbmc.LOGERROR,
+                )
                 xbmcgui.Dialog().ok(
                     "RezkaLocal — ошибка",
                     f"Озвучки не найдены вообще.\n\nURL: {page_url}\n\nHTML начало:\n{html[:300]}",
