@@ -1242,12 +1242,20 @@ def show_items(category, query=""):
     search_li.setInfo("video", {"title": "Поиск"})
     xbmcplugin.addDirectoryItem(HANDLE, _url(action="search", category=category), search_li, True)
 
+    needle = query.lower().strip()
+    if not needle:
+        # Don't dump the whole category (tens of thousands of titles) into
+        # one Kodi listing just for opening it — building/rendering that
+        # many list items is what makes it crawl on weak hardware (TV
+        # boxes). Wait for an actual search query instead.
+        xbmcplugin.endOfDirectory(HANDLE)
+        return
+
     if not os.path.exists(DB_PATH):
         xbmc.log(f"RezkaLocal: база не найдена: {DB_PATH}", xbmc.LOGERROR)
         xbmcplugin.endOfDirectory(HANDLE)
         return
 
-    needle = query.lower().strip()
     try:
         conn = _db_connect()
         try:
@@ -1267,7 +1275,7 @@ def show_items(category, query=""):
         rows = []
 
     for title, is_series in rows:
-        if needle and needle not in title.lower():
+        if needle not in title.lower():
             continue
         li = xbmcgui.ListItem(label=title)
         li.setInfo("video", {"title": title, "mediatype": "tvshow" if is_series else "movie"})
