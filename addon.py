@@ -211,6 +211,30 @@ def _parse_translator_links(html):
     return result
 
 
+def _parse_movie_translator_ids(html):
+    """Return {display_name: (translator_id, is_active)} for movie-style
+    translator entries, which — unlike series ones — carry no href at all:
+
+        <li title="Дубляж" class="b-translator__item active"
+            data-id="302" data-translator_id="56" ...>Дубляж</li>
+
+    A movie has no season/episode to combine a translator with, so rezka
+    switches translator in place via JS/AJAX rather than linking to a
+    separate page per translator — there's simply no URL to extract here
+    for anything but the one already showing (is_active)."""
+    result = {}
+    for m in re.finditer(
+        r'<li[^>]+title="([^"]+)"[^>]+class="b-translator__item( active)?"'
+        r'[^>]+data-translator_id="(\d+)"',
+        html,
+    ):
+        name, active, tid = m.groups()
+        name = name.strip().replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+        if name and name not in result:
+            result[name] = (tid, bool(active))
+    return result
+
+
 def _extract_cdn_config(html):
     """Stream URLs are baked directly into the page's own player-init call —
     sof.tv.initCDNMoviesEvents(...)/initCDNSeriesEvents(..., config) — as
@@ -365,9 +389,47 @@ def _fetch_qualities(item, translator_name, season=None, episode=None):
                 if low in name.lower() or name.lower() in low:
                     entry = e
                     break
-        if not entry:
-            if links:
-                found = ", ".join(links.keys())
+
+        if entry:
+            _tid, target_url = entry
+        else:
+            # No href-based (series-style) match. Movies list translators
+            # as plain <li> with no href at all — there's no season/
+            # episode to combine one with, so rezka switches translator in
+            # place via JS/AJAX instead of linking to a separate page. The
+            # AJAX endpoint that used to serve that switch is dead (see
+            # 1.3.0), so the only translator we can actually still reach
+            # is whichever one is already active on this very page.
+            movie_entries = _parse_movie_translator_ids(html)
+            movie_entry = movie_entries.get(translator_name)
+            if not movie_entry:
+                low = translator_name.lower()
+                for name, e in movie_entries.items():
+                    if low in name.lower() or name.lower() in low:
+                        movie_entry = e
+                        break
+
+            if movie_entry and movie_entry[1]:
+                # It's the active one — this page's own config is already
+                # for it, no extra fetch needed.
+                target_url = page_url
+            elif movie_entry:
+                active = next((n for n, (t, a) in movie_entries.items() if a), None)
+                xbmc.log(
+                    f"RezkaLocal: озвучка «{translator_name}» (id {movie_entry[0]}) не активна на "
+                    f"{page_url}; активна только «{active}». У фильмов (в отличие от сериалов) нет "
+                    f"отдельной ссылки на озвучку, а AJAX-переключение больше не работает.",
+                    xbmc.LOGERROR,
+                )
+                xbmcgui.Dialog().ok(
+                    "RezkaLocal — озвучка недоступна",
+                    f"«{translator_name}» не выбрана по умолчанию на странице фильма, "
+                    f"а отдельной ссылки на неё сайт не даёт (в отличие от сериалов).\n\n"
+                    f"Сейчас доступна только: «{active}»",
+                )
+                raise RuntimeError(f"Озвучка «{translator_name}» недоступна (фильм без AJAX-переключения)")
+            elif links or movie_entries:
+                found = ", ".join(list(links.keys()) + list(movie_entries.keys()))
                 xbmc.log(
                     f"RezkaLocal: озвучка «{translator_name}» не найдена. URL: {page_url}, "
                     f"найдено на странице: {found}",
@@ -379,11 +441,11 @@ def _fetch_qualities(item, translator_name, season=None, episode=None):
                 )
                 raise RuntimeError(f"Озвучка «{translator_name}» не найдена. На странице: {found}")
             else:
-                # No real translator links parsed at all — either the page
-                # is still an unsolved Anubis challenge (the fetch silently
-                # kept the challenge HTML instead of the real page) or the
-                # site changed the translator-list markup again. Log enough
-                # of the raw HTML to tell those apart from the next
+                # Nothing parsed at all — either the page is still an
+                # unsolved Anubis challenge (a failed _solve_anubis
+                # silently leaves the challenge HTML in place instead of
+                # raising) or the site changed the markup yet again. Log
+                # enough of the raw HTML to tell those apart from the next
                 # kodi.log, instead of relying on the on-screen dialog
                 # (easy to dismiss without reading, and never lands in the
                 # log file).
@@ -398,7 +460,6 @@ def _fetch_qualities(item, translator_name, season=None, episode=None):
                     f"Озвучки не найдены вообще.\n\nURL: {page_url}\n\nHTML начало:\n{html[:300]}",
                 )
                 raise RuntimeError(f"Озвучка «{translator_name}» не найдена на странице")
-        _tid, target_url = entry
 
     if season is not None:
         target_url = re.sub(r'\.html$', '', target_url) + f"/{season}-season/{episode}-episode.html"
