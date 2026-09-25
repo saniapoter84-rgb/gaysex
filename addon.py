@@ -884,7 +884,7 @@ def _show_kinogo_translators(item):
 
     for name in translators:
         li = xbmcgui.ListItem(label=f"Озвучка: {name}")
-        xbmcplugin.addDirectoryItem(HANDLE, _url(action=next_action, title=title, translator=name), li, True)
+        xbmcplugin.addDirectoryItem(HANDLE, _url(action=next_action, id=item["id"], translator=name), li, True)
     xbmcplugin.endOfDirectory(HANDLE)
 
 
@@ -903,7 +903,7 @@ def _show_kinogo_seasons(item, translator):
         li.setInfo("video", {"title": label, "season": s_idx})
         xbmcplugin.addDirectoryItem(
             HANDLE,
-            _url(action="list_episodes", title=title, translator=translator, season=str(s_idx)),
+            _url(action="list_episodes", id=item["id"], translator=translator, season=str(s_idx)),
             li,
             True,
         )
@@ -942,7 +942,7 @@ def _show_kinogo_episodes(item, translator, season):
             # Always route through quality folder so the user picks an explicit static bitrate
             xbmcplugin.addDirectoryItem(
                 HANDLE,
-                _url(action="list_kinogo_ep_qualities", title=title,
+                _url(action="list_kinogo_ep_qualities", id=item["id"],
                      translator=translator, season=str(s_idx), ep_idx=str(ep_idx)),
                 li, True,
             )
@@ -1146,7 +1146,7 @@ def _row_to_item(conn, row):
     and hls_episodes as nested dicts keyed by string numbers — so every
     other function in this file keeps working unchanged."""
     item_id, title, type_, url, source = row
-    item = {"title": title, "type": type_, "url": url}
+    item = {"id": item_id, "title": title, "type": type_, "url": url}
     if source:
         item["source"] = source
 
@@ -1186,19 +1186,22 @@ def _row_to_item(conn, row):
     return item
 
 
-def _find_item(title):
+def _find_item_by_id(item_id):
+    """Look up an item by its items.id primary key — not by title. Titles
+    aren't unique: 5000+ appear more than once within the same category
+    and 3000+ across different categories (e.g. a film and an anime with
+    the same name), so routing on title alone could open a title-matching
+    but otherwise unrelated item from a different category than the one
+    the user actually picked it from."""
     if not os.path.exists(DB_PATH):
         xbmc.log(f"RezkaLocal: база не найдена: {DB_PATH}", xbmc.LOGERROR)
         return None
     try:
         conn = _db_connect()
         try:
-            # Duplicate titles exist in the scraped data (multi-worker
-            # re-scrapes); ORDER BY id picks the same "first match" the
-            # old linear json scan used to.
             row = conn.execute(
-                "SELECT id, title, type, url, source FROM items WHERE title = ? ORDER BY id LIMIT 1",
-                (title,),
+                "SELECT id, title, type, url, source FROM items WHERE id = ?",
+                (item_id,),
             ).fetchone()
             return _row_to_item(conn, row) if row else None
         finally:
@@ -1264,7 +1267,7 @@ def show_items(category, query=""):
             # in Python (title.lower()) since SQLite's own LOWER()/NOCASE
             # only case-folds ASCII, not Cyrillic.
             rows = conn.execute(
-                """SELECT title, EXISTS(SELECT 1 FROM seasons WHERE seasons.item_id = items.id)
+                """SELECT id, title, EXISTS(SELECT 1 FROM seasons WHERE seasons.item_id = items.id)
                    FROM items WHERE type = ? ORDER BY title""",
                 (category,),
             ).fetchall()
@@ -1274,12 +1277,12 @@ def show_items(category, query=""):
         xbmc.log(f"RezkaLocal: ошибка SQLite: {e}", xbmc.LOGERROR)
         rows = []
 
-    for title, is_series in rows:
+    for item_id, title, is_series in rows:
         if needle not in title.lower():
             continue
         li = xbmcgui.ListItem(label=title)
         li.setInfo("video", {"title": title, "mediatype": "tvshow" if is_series else "movie"})
-        xbmcplugin.addDirectoryItem(HANDLE, _url(action="list_translators", title=title), li, True)
+        xbmcplugin.addDirectoryItem(HANDLE, _url(action="list_translators", id=item_id), li, True)
     xbmcplugin.endOfDirectory(HANDLE)
 
 
@@ -1291,8 +1294,8 @@ def show_search(category):
     show_items(category, query=query)
 
 
-def show_translators(title):
-    item = _find_item(title)
+def show_translators(item_id):
+    item = _find_item_by_id(item_id)
     if not item:
         xbmcplugin.endOfDirectory(HANDLE)
         return
@@ -1325,27 +1328,29 @@ def show_translators(title):
         # straight to seasons/qualities instead of showing an empty menu.
         # _fetch_qualities resolves the actual track id from the page.
         if is_series:
-            show_seasons(title, "")
+            show_seasons(item_id, "")
         else:
-            show_qualities(title, "")
+            show_qualities(item_id, "")
         return
 
     for name in names:
         li = xbmcgui.ListItem(label=f"Озвучка: {name}")
-        xbmcplugin.addDirectoryItem(HANDLE, _url(action=next_action, title=title, translator=name), li, True)
+        xbmcplugin.addDirectoryItem(HANDLE, _url(action=next_action, id=item_id, translator=name), li, True)
     xbmcplugin.endOfDirectory(HANDLE)
 
 
-def show_qualities(title, translator):
+def show_qualities(item_id, translator):
     """
     Movies/cartoons quality menu.
     Old format: static URLs from database.
     New format: fetch from rezka CDN API or kinogo cinemar playlist.
     """
-    item = _find_item(title)
+    item = _find_item_by_id(item_id)
     if not item:
         xbmcplugin.endOfDirectory(HANDLE)
         return
+
+    title = item["title"]
 
     if item.get("source") == "kinogo":
         _show_kinogo_movie_qualities(item, translator)
@@ -1372,10 +1377,10 @@ def show_qualities(title, translator):
         _render_qualities(title, qualities, referer=item.get("url"))
 
 
-def show_seasons(title, translator):
-    item = _find_item(title)
+def show_seasons(item_id, translator):
+    item = _find_item_by_id(item_id)
     if not item:
-        xbmcgui.Dialog().ok("RezkaLocal", f"Сериал не найден в базе:\n{title}")
+        xbmcgui.Dialog().ok("RezkaLocal", "Сериал не найден в базе")
         xbmcplugin.endOfDirectory(HANDLE)
         return
 
@@ -1400,16 +1405,18 @@ def show_seasons(title, translator):
         li = xbmcgui.ListItem(label=f"Сезон {s}")
         li.setInfo("video", {"title": f"Сезон {s}", "season": int(s)})
         xbmcplugin.addDirectoryItem(
-            HANDLE, _url(action="list_episodes", title=title, translator=translator, season=s), li, True
+            HANDLE, _url(action="list_episodes", id=item_id, translator=translator, season=s), li, True
         )
     xbmcplugin.endOfDirectory(HANDLE)
 
 
-def show_episodes(title, translator, season):
-    item = _find_item(title)
+def show_episodes(item_id, translator, season):
+    item = _find_item_by_id(item_id)
     if not item:
         xbmcplugin.endOfDirectory(HANDLE)
         return
+
+    title = item["title"]
 
     if item.get("source") == "kinogo":
         _show_kinogo_episodes(item, translator, season)
@@ -1441,7 +1448,7 @@ def show_episodes(title, translator, season):
         else:
             xbmcplugin.addDirectoryItem(
                 HANDLE,
-                _url(action="list_episode_qualities", title=title, translator=translator,
+                _url(action="list_episode_qualities", id=item_id, translator=translator,
                      season=season, episode=ep),
                 li,
                 True,
@@ -1449,12 +1456,14 @@ def show_episodes(title, translator, season):
     xbmcplugin.endOfDirectory(HANDLE)
 
 
-def show_episode_qualities(title, translator, season, episode):
+def show_episode_qualities(item_id, translator, season, episode):
     """Fetch stream URLs for one episode and show quality menu."""
-    item = _find_item(title)
+    item = _find_item_by_id(item_id)
     if not item:
         xbmcplugin.endOfDirectory(HANDLE)
         return
+
+    title = item["title"]
 
     try:
         qualities = _fetch_qualities(item, translator, season=int(season), episode=int(episode))
@@ -1498,8 +1507,8 @@ def play_video(video_url, referer=None):
     xbmcplugin.setResolvedUrl(HANDLE, True, listitem=li)
 
 
-def show_kinogo_ep_qualities(title, translator, season, ep_idx):
-    item = _find_item(title)
+def show_kinogo_ep_qualities(item_id, translator, season, ep_idx):
+    item = _find_item_by_id(item_id)
     if not item:
         xbmcplugin.endOfDirectory(HANDLE)
         return
@@ -1522,17 +1531,17 @@ def router(paramstring):
     elif action == "search":
         show_search(p["category"])
     elif action == "list_translators":
-        show_translators(p["title"])
+        show_translators(int(p["id"]))
     elif action == "list_qualities":
-        show_qualities(p["title"], p["translator"])
+        show_qualities(int(p["id"]), p["translator"])
     elif action == "list_seasons":
-        show_seasons(p["title"], p["translator"])
+        show_seasons(int(p["id"]), p["translator"])
     elif action == "list_episodes":
-        show_episodes(p["title"], p["translator"], p["season"])
+        show_episodes(int(p["id"]), p["translator"], p["season"])
     elif action == "list_episode_qualities":
-        show_episode_qualities(p["title"], p["translator"], p["season"], p["episode"])
+        show_episode_qualities(int(p["id"]), p["translator"], p["season"], p["episode"])
     elif action == "list_kinogo_ep_qualities":
-        show_kinogo_ep_qualities(p["title"], p["translator"], p["season"], p["ep_idx"])
+        show_kinogo_ep_qualities(int(p["id"]), p["translator"], p["season"], p["ep_idx"])
     elif action == "play":
         play_video(p["video_url"], referer=p.get("referer"))
 
