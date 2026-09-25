@@ -292,9 +292,18 @@ def _trash_decode(s):
 
 
 def _pick_url(parts_str):
-    """From 'url1 or url2' pick the HLS/m3u8 variant, else last."""
+    """From 'url1 or url2' pick the direct MP4 variant, else last.
+
+    voidboost.one serves the HLS side of this pair (url with a trailing
+    ':hls:manifest.m3u8') as a sliding-window manifest with no
+    #EXT-X-ENDLIST, so inputstream.adaptive detects it as a *live*
+    stream and keeps force-seeking to the live edge — playback jumps
+    forward on its own every few seconds instead of just playing
+    (confirmed in kodi.log: "Type: live" followed by repeated PosTime
+    jumps seconds apart). The plain MP4 URL alongside it is an ordinary
+    progressive file with none of that."""
     parts = [p.strip() for p in parts_str.split(" or ") if p.strip()]
-    url = next((p for p in reversed(parts) if "m3u8" in p or "hls" in p), parts[-1])
+    url = next((p for p in parts if "m3u8" not in p and "hls" not in p), parts[-1])
     return ("https:" + url) if url.startswith("//") else url
 
 
