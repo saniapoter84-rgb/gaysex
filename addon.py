@@ -235,25 +235,36 @@ def _parse_movie_translator_ids(html):
     return result
 
 
-def _extract_cdn_config(html):
+def _extract_cdn_config(html, expected_id=None):
     """Stream URLs are baked directly into the page's own player-init call —
-    sof.tv.initCDNMoviesEvents(...)/initCDNSeriesEvents(..., config) — as
-    its trailing JSON object argument. rezka apparently stopped resolving
-    streams via the /ajax/get_cdn_series/ endpoint for normal playback at
-    some point (it now returns a generic "session expired" error for any
-    request there); reading the page's own embedded config instead needs
-    no extra network round-trip and no session state at all."""
-    m = re.search(r'sof\.tv\.initCDN(?:Movies|Series)Events\s*\(', html)
-    if not m:
-        return None
-    idx = html.find('{', m.end())
-    if idx == -1:
-        return None
-    try:
-        obj, _ = json.JSONDecoder().raw_decode(html, idx)
-        return obj
-    except json.JSONDecodeError:
-        return None
+    sof.tv.initCDNMoviesEvents(id, ...)/initCDNSeriesEvents(id, ..., config)
+    — as its trailing JSON object argument. rezka apparently stopped
+    resolving streams via the /ajax/get_cdn_series/ endpoint for normal
+    playback at some point (it now returns a generic "session expired"
+    error for any request there); reading the page's own embedded config
+    instead needs no extra network round-trip and no session state at all.
+
+    A page can embed more than one such call — e.g. a "watch also"/
+    recommended-title widget elsewhere on the page has its own player-init
+    for a *different* title — so grabbing the first match unconditionally
+    can silently return a stranger's stream instead of the one the URL is
+    actually for. `expected_id` (the content id embedded in the page's own
+    URL, e.g. "2201" in .../2201-univer-novaya-obschaga-2011-latest.html)
+    lets every match be checked against it, so a stray widget earlier in
+    the HTML is skipped in favour of the real player-init call for this
+    title. Without an expected id, the first match wins as before."""
+    for m in re.finditer(r'sof\.tv\.initCDN(?:Movies|Series)Events\s*\(\s*(\d+)', html):
+        if expected_id is not None and m.group(1) != expected_id:
+            continue
+        idx = html.find('{', m.end())
+        if idx == -1:
+            continue
+        try:
+            obj, _ = json.JSONDecoder().raw_decode(html, idx)
+            return obj
+        except json.JSONDecodeError:
+            continue
+    return None
 
 
 def _parse_season_tabs(html):
@@ -474,10 +485,16 @@ def _fetch_qualities(item, translator_name, season=None, episode=None):
         target_url = re.sub(r'\.html$', '', target_url) + f"/{season}-season/{episode}-episode.html"
 
     html = _fetch(target_url)
-    config = _extract_cdn_config(html)
+    id_m = re.search(r'/(\d+)-[^/]+\.html', item.get("url", ""))
+    expected_id = id_m.group(1) if id_m else None
+    config = _extract_cdn_config(html, expected_id=expected_id)
 
     if not config or not config.get("streams"):
-        xbmc.log(f"RezkaLocal: не удалось извлечь конфиг плеера. URL: {target_url}", xbmc.LOGERROR)
+        xbmc.log(
+            f"RezkaLocal: не удалось извлечь конфиг плеера. URL: {target_url}, "
+            f"ожидаемый id: {expected_id}",
+            xbmc.LOGERROR,
+        )
         raise RuntimeError(
             "Не удалось получить ссылки на поток со страницы "
             "(возможно, этот перевод доступен только для Premium)"
