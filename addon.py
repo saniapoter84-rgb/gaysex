@@ -373,6 +373,74 @@ def _translator_page_url(item, translator_name):
     return entry[1] if entry else item["url"]
 
 
+def _fetch_series_stream_ajax(domain, content_id, translator_id, season, episode):
+    """Try rezka's get_cdn_series AJAX endpoint for one specific episode's
+    stream — the mechanism a real browser actually uses to switch episodes
+    within an already-loaded season page. There is no separate static URL
+    per episode (.../1-season/5-episode.html is not a real rezka page — it
+    silently serves an unrelated title's page instead of 404ing, see the
+    expected_id guard in _extract_cdn_config and 1.4.3/1.4.4's kodi.log).
+
+    This endpoint returned a generic "Время сессии истекло" error for
+    every request tried in 1.2.4/1.2.5 despite matching third-party HDrezka
+    client headers and cookies, which is why 1.3.0 abandoned it for page
+    scraping — but that investigation was inconclusive (based on a
+    live capture from a different rezka mirror, never confirmed against
+    this domain) before it was dropped. Worth one more real attempt with
+    full diagnostics now that the page-scraping fallback has its own
+    confirmed problem. Returns {quality: url}, or None on any failure —
+    the caller decides what "no AJAX" means; every failure logs the full
+    request/response so the *next* occurrence gives real data instead of
+    another blind guess."""
+    _seed_browser_cookies(domain)
+    data = {
+        "id": content_id,
+        "translator_id": translator_id,
+        "season": str(season),
+        "episode": str(episode),
+        "action": "get_stream",
+    }
+    req = Request(
+        f"{domain}/ajax/get_cdn_series/?t={time.time_ns()}",
+        data=urlencode(data).encode(),
+        headers={
+            "User-Agent": _UA,
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": f"{domain}/",
+            "Origin": domain,
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept-Encoding": "gzip, deflate",
+        },
+    )
+    try:
+        raw_body = _read_response(_open_with_gateway_retry(req, timeout=15))
+    except (URLError, HTTPError) as e:
+        xbmc.log(f"RezkaLocal: get_cdn_series сетевая ошибка: {e}", xbmc.LOGWARNING)
+        return None
+
+    try:
+        body = json.loads(raw_body)
+    except json.JSONDecodeError:
+        xbmc.log(
+            f"RezkaLocal: get_cdn_series вернул не JSON. Запрос: {data}, "
+            f"ответ (первые 500 символов): {raw_body[:500]!r}",
+            xbmc.LOGWARNING,
+        )
+        return None
+
+    if not body.get("success"):
+        host = urlsplit(domain).hostname or ""
+        held_cookies = sorted(c.name for c in _cookie_jar if c.domain in (host, f".{host}"))
+        xbmc.log(
+            f"RezkaLocal: get_cdn_series отказал. Запрос: {data}, "
+            f"куки для {host}: {held_cookies}, ответ: {raw_body!r}",
+            xbmc.LOGWARNING,
+        )
+        return None
+
+    return _parse_cdn_url(body.get("url"))
+
+
 def _fetch_qualities(item, translator_name, season=None, episode=None):
     """
     Fetch stream URLs for a new-format entry by reading the target page's
@@ -398,6 +466,7 @@ def _fetch_qualities(item, translator_name, season=None, episode=None):
         _save_cache(cache)
 
     target_url = page_url
+    translator_id = None
 
     if translator_name:
         html = _fetch(page_url)
@@ -411,7 +480,7 @@ def _fetch_qualities(item, translator_name, season=None, episode=None):
                     break
 
         if entry:
-            _tid, target_url = entry
+            translator_id, target_url = entry
         else:
             # No href-based (series-style) match. Movies list translators
             # as plain <li> with no href at all — there's no season/
@@ -481,12 +550,42 @@ def _fetch_qualities(item, translator_name, season=None, episode=None):
                 )
                 raise RuntimeError(f"Озвучка «{translator_name}» не найдена на странице")
 
+    id_m = re.search(r'/(\d+)-[^/]+\.html', item.get("url", ""))
+    expected_id = id_m.group(1) if id_m else None
+
     if season is not None:
+        # There is no static per-episode URL on rezka — .../1-season/
+        # 5-episode.html is not a real page: it silently serves whatever
+        # unrelated title happens to sit at that path instead of 404ing
+        # (confirmed in kodi.log: it returned a different movie's page
+        # entirely). A real browser switches episodes within a loaded
+        # season page via an AJAX call instead. Try that first; the
+        # guessed URL below only ever runs as a fallback now, and even
+        # then the expected_id check above stops it from silently
+        # serving whatever's on that wrong page.
+        resolved_translator_id = translator_id
+        if resolved_translator_id is None:
+            # No translator was explicitly resolved (original/only track).
+            # Read the id straight off target_url's own default
+            # player-init call instead of guessing at one.
+            probe_html = html if translator_name else _fetch(target_url)
+            m = re.search(r'sof\.tv\.initCDNSeriesEvents\s*\(\s*\d+\s*,\s*(\d+)', probe_html)
+            resolved_translator_id = m.group(1) if m else None
+
+        ajax_qualities = None
+        if expected_id and resolved_translator_id:
+            ajax_qualities = _fetch_series_stream_ajax(
+                _domain_of(target_url), expected_id, resolved_translator_id, season, episode
+            )
+        if ajax_qualities:
+            cache = _load_cache()
+            cache[key] = ajax_qualities
+            _save_cache(cache)
+            return ajax_qualities
+
         target_url = re.sub(r'\.html$', '', target_url) + f"/{season}-season/{episode}-episode.html"
 
     html = _fetch(target_url)
-    id_m = re.search(r'/(\d+)-[^/]+\.html', item.get("url", ""))
-    expected_id = id_m.group(1) if id_m else None
     config = _extract_cdn_config(html, expected_id=expected_id)
 
     if not config or not config.get("streams"):
