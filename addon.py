@@ -490,9 +490,17 @@ def _fetch_qualities(item, translator_name, season=None, episode=None):
     config = _extract_cdn_config(html, expected_id=expected_id)
 
     if not config or not config.get("streams"):
+        # Log everything needed to tell apart "wrong URL, page has no
+        # player-init call for this id at all" from "right page, id
+        # matched but streams missing (premium-only quality)" from "still
+        # stuck on an unsolved Anubis challenge" from the next kodi.log,
+        # instead of guessing again.
+        found_ids = re.findall(r'sof\.tv\.initCDN(?:Movies|Series)Events\s*\(\s*(\d+)', html)
         xbmc.log(
             f"RezkaLocal: не удалось извлечь конфиг плеера. URL: {target_url}, "
-            f"ожидаемый id: {expected_id}",
+            f"ожидаемый id: {expected_id}, найденные id на странице: {found_ids}, "
+            f"anubis_challenge в html: {'anubis_challenge' in html}, "
+            f"длина html: {len(html)}, начало: {html[:500]!r}",
             xbmc.LOGERROR,
         )
         raise RuntimeError(
